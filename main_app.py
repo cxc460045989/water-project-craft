@@ -973,12 +973,23 @@ class MoistureAnalyzer(QMainWindow):
                         item0.setText(name)
                         logger.debug("[RESTORE] set row " + str(r) + " col0=" + name)
                     else:
-                        logger.debug("[RESTORE] WARNING: t.item(" + str(r) + ",0) is None")
+                        from PySide2.QtWidgets import QTableWidgetItem
+                        from PySide2.QtCore import Qt
+                        i0 = QTableWidgetItem(name)
+                        i0.setTextAlignment(Qt.AlignCenter)
+                        t.setItem(r, 0, i0)
+                        logger.debug("[RESTORE] created row " + str(r) + " col0=" + name)
                 mode = row.get("mode", "") or ""
                 if mode:
                     item1 = t.item(r, 1)
                     if item1 is not None:
                         item1.setText(mode)
+                    else:
+                        from PySide2.QtWidgets import QTableWidgetItem
+                        from PySide2.QtCore import Qt
+                        i1 = QTableWidgetItem(mode)
+                        i1.setTextAlignment(Qt.AlignCenter)
+                        t.setItem(r, 1, i1)
                 tare = row.get("tare_weight")
                 if tare is not None:
                     item2 = t.item(r, 2)
@@ -1007,19 +1018,64 @@ class MoistureAnalyzer(QMainWindow):
                     logger.debug("[RESTORE] set row " + str(r) + " col3=" + str(sw))
                 cdw = row.get("check_dry_weight")
                 if cdw is not None:
-                    t.item(r, 4).setText("{:.4f}".format(cdw))
+                    item4 = t.item(r, 4)
+                    if item4 is not None:
+                        item4.setText("{:.4f}".format(cdw))
+                    else:
+                        from PySide2.QtWidgets import QTableWidgetItem
+                        from PySide2.QtCore import Qt
+                        i4 = QTableWidgetItem("{:.4f}".format(cdw))
+                        i4.setTextAlignment(Qt.AlignCenter)
+                        i4.setFlags(i4.flags() & ~Qt.ItemIsEditable)
+                        t.setItem(r, 4, i4)
                 dw = row.get("dry_weight")
                 if dw is not None:
-                    t.item(r, 5).setText("{:.4f}".format(dw))
+                    item5 = t.item(r, 5)
+                    if item5 is not None:
+                        item5.setText("{:.4f}".format(dw))
+                    else:
+                        from PySide2.QtWidgets import QTableWidgetItem
+                        from PySide2.QtCore import Qt
+                        i5 = QTableWidgetItem("{:.4f}".format(dw))
+                        i5.setTextAlignment(Qt.AlignCenter)
+                        i5.setFlags(i5.flags() & ~Qt.ItemIsEditable)
+                        t.setItem(r, 5, i5)
                 mst = row.get("moisture")
                 if mst is not None:
-                    t.item(r, 6).setText("{:.2f}".format(mst))
+                    item6 = t.item(r, 6)
+                    if item6 is not None:
+                        item6.setText("{:.2f}".format(mst))
+                    else:
+                        from PySide2.QtWidgets import QTableWidgetItem
+                        from PySide2.QtCore import Qt
+                        i6 = QTableWidgetItem("{:.2f}".format(mst))
+                        i6.setTextAlignment(Qt.AlignCenter)
+                        i6.setFlags(i6.flags() & ~Qt.ItemIsEditable)
+                        t.setItem(r, 6, i6)
                 avg = row.get("avg_moisture")
                 if avg is not None:
-                    t.item(r, 7).setText("{:.2f}".format(avg))
+                    item7 = t.item(r, 7)
+                    if item7 is not None:
+                        item7.setText("{:.2f}".format(avg))
+                    else:
+                        from PySide2.QtWidgets import QTableWidgetItem
+                        from PySide2.QtCore import Qt
+                        i7 = QTableWidgetItem("{:.2f}".format(avg))
+                        i7.setTextAlignment(Qt.AlignCenter)
+                        i7.setFlags(i7.flags() & ~Qt.ItemIsEditable)
+                        t.setItem(r, 7, i7)
                 prec = row.get("precision_val")
                 if prec is not None:
-                    t.item(r, 8).setText("{:.2f}".format(prec))
+                    item8 = t.item(r, 8)
+                    if item8 is not None:
+                        item8.setText("{:.2f}".format(prec))
+                    else:
+                        from PySide2.QtWidgets import QTableWidgetItem
+                        from PySide2.QtCore import Qt
+                        i8 = QTableWidgetItem("{:.2f}".format(prec))
+                        i8.setTextAlignment(Qt.AlignCenter)
+                        i8.setFlags(i8.flags() & ~Qt.ItemIsEditable)
+                        t.setItem(r, 8, i8)
         except Exception as e:
             logger.debug("[RESTORE] ERROR: " + str(e))
     

@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """WorkflowValidator - 自动化业务流程验证框架
 模拟仪器层 + 流程驱动 + 自动校验 + 结构化报告
 无需真机即可验证全链路业务逻辑
@@ -448,12 +448,12 @@ class WorkflowValidator:
         return r
 
 class TestScenario:
-    """??????"""
+    """测试场景集合"""
 
     @staticmethod
     def validate_append_sample():
-        v = WorkflowValidator("??????")
-        v._log("=== ??1: ???? ===")
+        v = WorkflowValidator("追加样品验证")
+        v._log("=== 场景1: 追加样品 ===")
         sim = v.create_simulator(initial_temp=25.0, online=True)
         sim.set_uplink_interval(200)
         sim.set_weight(25.0235)
@@ -472,18 +472,18 @@ class TestScenario:
             time.sleep(0.2)
             if result: break
         log_cmds = list(v._cmd_log)
-        v.check("?????????", "move_to" in log_cmds)
-        v.check("???????", "handshake" in log_cmds)
-        v.check("?????", True)
+        v.check("包含移动指令", "move_to" in log_cmds)
+        v.check("包含握手指令", "handshake" in log_cmds)
+        v.check("流程完成", True)
         worker.stop()
         v.destroy_simulator()
         return v.get_report()
 
     @staticmethod
     def validate_moisture_test_phase(phase="analysis_water"):
-        label = "???" if phase == "analysis_water" else "??"
-        v = WorkflowValidator("%s????" % label)
-        v._log("=== ??2: %s?? ===" % label)
+        label = "分析水" if phase == "analysis_water" else "全水"
+        v = WorkflowValidator("%s测试验证" % label)
+        v._log("=== 场景2: %s测试 ===" % label)
         sim = v.create_simulator(initial_temp=95.0, online=True)
         sim.set_uplink_interval(200)
         from test_controller import TestConfig, TestWorker
@@ -493,9 +493,9 @@ class TestScenario:
         cfg.aw_fan = True
         cfg.aw_const_check = False
         if phase == "analysis_water":
-            cfg.samples = [(1, "?A", "???", 1.0)]
+            cfg.samples = [(1, "样A", "分析水", 1.0)]
         else:
-            cfg.samples = [(1, "?B", "??", 10.0)]
+            cfg.samples = [(1, "样B", "全水", 10.0)]
         cfg.beep_enabled = False
         worker = TestWorker(v._serial_mgr, cfg)
         worker.start_test()
@@ -507,37 +507,37 @@ class TestScenario:
                 except: pass
             time.sleep(0.1)
             if worker._state and worker._state.stage_done:
-                v._log("??? %d tick ???" % tick_n)
+                v._log("测试完成 %d tick 结束" % tick_n)
                 break
         worker.stop_test()
         log_cmds = list(v._cmd_log)
-        v.check("?????????", "moisture_test_on" in log_cmds or "moisture_test_off" in log_cmds)
-        v.check("???????", "temp_control" in log_cmds)
+        v.check("包含水分测试指令", "moisture_test_on" in log_cmds or "moisture_test_off" in log_cmds)
+        v.check("包含控温指令", "temp_control" in log_cmds)
         v.destroy_simulator()
         return v.get_report()
 
     @staticmethod
     def validate_full_chain():
-        v = WorkflowValidator("?????")
-        v._log("=== ??3: ??? ===\n")
+        v = WorkflowValidator("全链路验证")
+        v._log("=== 场景3: 全链路 ===\n")
         sim = v.create_simulator(initial_temp=25.0, online=True)
         sim.set_uplink_interval(200)
         from test_controller import TestConfig, TestWorker
         from sample_append import SampleAppendWorker
-        v._log("[??] ??1: ????")
+        v._log("[步骤] 阶段1: 追加样品")
         wa = SampleAppendWorker(v._serial_mgr)
         sim.set_weight(25.0235)
-        wa.start_append(position=3, weight_lo=0.9, weight_hi=1.1, sample_name="??")
+        wa.start_append(position=3, weight_lo=0.9, weight_hi=1.1, sample_name="样C")
         for _ in range(10):
             time.sleep(0.2)
         wa.stop()
-        v._log("[??] ??2: ?????")
+        v._log("[步骤] 阶段2: 分析水测试")
         cfg = TestConfig()
         cfg.aw_temp = 105
         cfg.aw_time = 1
         cfg.aw_fan = True
         cfg.aw_const_check = False
-        cfg.samples = [(1, "?A", "???", 1.0)]
+        cfg.samples = [(1, "样A", "分析水", 1.0)]
         cfg.beep_enabled = False
         worker = TestWorker(v._serial_mgr, cfg)
         worker.start_test()
@@ -551,13 +551,13 @@ class TestScenario:
             if worker._state and worker._state.stage_done:
                 break
         worker.stop_test()
-        v._log("[??] ??3: ????")
+        v._log("[步骤] 阶段3: 全水测试")
         cfg2 = TestConfig()
         cfg2.tw_temp = 105
         cfg2.tw_time = 1
         cfg2.tw_fan = True
         cfg2.tw_const_check = False
-        cfg2.samples = [(2, "?B", "??", 10.0)]
+        cfg2.samples = [(2, "样B", "全水", 10.0)]
         cfg2.beep_enabled = False
         worker2 = TestWorker(v._serial_mgr, cfg2)
         worker2.start_test()
@@ -569,10 +569,10 @@ class TestScenario:
                 break
         worker2.stop_test()
         log_cmds = list(v._cmd_log)
-        v.check("??move_to??", "move_to" in log_cmds)
-        v.check("??moisture_test??", "moisture_test_on" in log_cmds or "moisture_test_off" in log_cmds)
-        v.check("??temp_control??", "temp_control" in log_cmds)
-        v.check("??tare??", "tare" in log_cmds)
+        v.check("包含move_to指令", "move_to" in log_cmds)
+        v.check("包含moisture_test指令", "moisture_test_on" in log_cmds or "moisture_test_off" in log_cmds)
+        v.check("包含temp_control指令", "temp_control" in log_cmds)
+        v.check("包含tare指令", "tare" in log_cmds)
         v.destroy_simulator()
         return v.get_report()
 

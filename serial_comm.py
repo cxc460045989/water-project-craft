@@ -1,5 +1,4 @@
-﻿import time
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """串口通讯统一封装层 — 通用框架
 框架: PySide2 (Qt5) + pyserial — 兼容 Windows 7 / 麒麟Linux x86/ARM64
 
@@ -17,7 +16,7 @@
     mgr.send(b"AT\r\n")
 """
 
-import sys
+import sys, time
 from collections import namedtuple
 
 from PySide2.QtCore import QObject, Signal, QTimer

@@ -1,5 +1,4 @@
-﻿import time
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """称重流程控制器 - 微机全自动水分测定仪
 串口通讯版本：批量称坩埚 + 批量称样品 + 单个称样品完整流程
 所有串口操作在 QThread 工作线程执行，信号槽更新 UI，不阻塞主线程
@@ -358,7 +357,7 @@ class WeighWorker(QThread):
             return 0.0, None
         f = frames[-1]
         if f is not None:
-            self._last_uplink_time = _t.time()
+            self._last_uplink_time = time.time()
             return f["weight"], f["temperature"]
         return 0.0, None
 
