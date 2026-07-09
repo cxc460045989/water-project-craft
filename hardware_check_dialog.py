@@ -131,6 +131,9 @@ class HardwareCheckDialog(QDialog):
         self._le_pos.setAlignment(Qt.AlignCenter)
         h.addWidget(self._le_pos)
         h.addWidget(QLabel(" 号样位 "))
+        self._cb_auto_lower = QCheckBox("移动后自动下降")
+        self._cb_auto_lower.setChecked(False)
+        h.addWidget(self._cb_auto_lower)
         gl.addLayout(h, 2, 0, 1, 2)
 
         cb_widget = QWidget()
@@ -138,7 +141,7 @@ class HardwareCheckDialog(QDialog):
         cb_layout.setContentsMargins(20, 10, 20, 10)
         cb_layout.setSpacing(8)
         self._cb_lid = QCheckBox(" 炉盖 ")
-        self._cb_lid.toggled.connect(lambda s: self._on_checkbox_toggled(s, "炉盖", 0x19, 0x18))
+        self._cb_lid.toggled.connect(lambda s: self._on_checkbox_toggled(s, "炉盖", 0x18, 0x19))
         cb_layout.addWidget(self._cb_lid, 0, 0)
         self._cb_heat = QCheckBox(" 加热 ")
         self._cb_heat.toggled.connect(lambda s: self._on_checkbox_toggled(s, "加热", 0x57, 0x1B))
@@ -249,7 +252,7 @@ class HardwareCheckDialog(QDialog):
         self._status.setText("错误: " + msg)
 
     def _on_move_to_pos(self):
-        """读取输入框样位号"""
+        """读取输入框样位号，可选自动下降"""
         try:
             pos = int(self._le_pos.text().strip())
         except (ValueError, AttributeError):
@@ -259,6 +262,9 @@ class HardwareCheckDialog(QDialog):
         from protocol_layer import CommandBuilder
         cmd = CommandBuilder.build_move_to(pos)
         self.send_command("移动到" + str(pos) + "号位", cmd)
+        if self._cb_auto_lower.isChecked():
+            from PySide2.QtCore import QTimer
+            QTimer.singleShot(3000, lambda: self.send_command("样盘下降(自动)", 0x15))
 
     def send_command(self, label, func_code_or_bytes):
         if not self._mgr or not self._mgr.is_connected:
@@ -272,7 +278,8 @@ class HardwareCheckDialog(QDialog):
             cmd = CommandBuilder.build_command(func_code_or_bytes)
         self._status.setText(label + " ...")
         if func_code_or_bytes != CMD.HANDSHAKE:
-            if not handshake(self._mgr):
+            if not handshake(self._mgr, retries=10,
+                             last_uplink_time=self._mgr.last_uplink_time if self._mgr else None):
                 logger.info("[HARDWARE][" + (self._mgr.port_name if self._mgr else "?") + "] " + label + " 失败: 握手无响应")
                 self._status.setText(label + " 失败: 握手无响应")
                 return

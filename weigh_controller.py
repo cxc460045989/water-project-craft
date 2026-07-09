@@ -104,6 +104,7 @@ class WeighWorker(QThread):
     # ===== 批量称坩埚 =====
     def _batch_tare(self):
         _log("批量坩埚称量开始, 共 " + str(len(self._valid_rows)) + " 个")
+        self._send_long_duration_cmd(CMD.CLOSE_LID, desc="关炉门")
         for row, name, mode in self._valid_rows:
             if not self._running:
                 return
@@ -112,12 +113,14 @@ class WeighWorker(QThread):
             self._weigh_one_tare(row, name)
         _log("批量坩埚称量完成")
         self._send_long_duration_cmd(CMD.SAMPLE_PLATE_UP, desc="样盘上升")
+        self._send_long_duration_cmd(CMD.OPEN_LID, desc="开炉门")
         self._send_cmd(CMD.BEEPER_1S, desc="蜂鸣提示")
         self.sig_weigh_done.emit("tare")
 
     # ===== 批量称样品 =====
     def _batch_sample(self):
         _log("批量样品称量开始, 共 " + str(len(self._valid_rows)) + " 个")
+        self._send_long_duration_cmd(CMD.CLOSE_LID, desc="关炉门")
         for row, name, mode in self._valid_rows:
             if not self._running:
                 return
@@ -126,6 +129,7 @@ class WeighWorker(QThread):
             self._weigh_one_sample(row, name)
         _log("批量样品称量完成")
         self._send_long_duration_cmd(CMD.SAMPLE_PLATE_UP, desc="样盘上升")
+        self._send_long_duration_cmd(CMD.OPEN_LID, desc="开炉门")
         self._send_cmd(CMD.BEEPER_1S, desc="蜂鸣提示")
         self.sig_weigh_done.emit("sample")
 
@@ -134,6 +138,7 @@ class WeighWorker(QThread):
         _log("单个称量样品开始, 共 " + str(len(self._valid_rows)) + " 个")
         self._send_cmd(CMD.ENTER_WEIGH_MODE, desc="进入称量样重状态")
         self._sleep(CMD_INTERVAL_S)
+        self._send_long_duration_cmd(CMD.CLOSE_LID, desc="关炉门")
         for row, name, mode in self._valid_rows:
             if not self._running:
                 return
@@ -179,6 +184,7 @@ class WeighWorker(QThread):
                 break
         _log("单个称量全部完成")
         self._send_long_duration_cmd(CMD.SAMPLE_PLATE_UP, desc="样盘上升")
+        self._send_long_duration_cmd(CMD.OPEN_LID, desc="开炉门")
         self._send_cmd(CMD.EXIT_WEIGH_MODE, desc="解除称重状态")
         self.sig_weigh_done.emit("sample")
 
@@ -302,11 +308,11 @@ class WeighWorker(QThread):
         """统一调用 protocol_layer.handshake，带上行链路预检"""
         from protocol_layer import handshake
         ok = handshake(self._serial, retries=HANDSHAKE_RETRIES, wait_ms=100,
-                       last_uplink_time=self._last_uplink_time, timeout=UPLINK_TIMEOUT_S)
+                       last_uplink_time=self._serial.last_uplink_time, timeout=UPLINK_TIMEOUT_S)
         if ok:
             _log("握手成功")
         else:
-            _log("握手失败，上行帧最近时间: " + str(self._last_uplink_time))
+            _log("握手失败，上行帧最近时间: " + str(self._serial.last_uplink_time))
         return ok
 
     def _send_cmd(self, func_code, desc=""):
@@ -315,15 +321,29 @@ class WeighWorker(QThread):
         cmd = CommandBuilder.build_command(func_code)
         _log("发送指令: " + desc + " code=0x" + format(func_code, "02X") +
              " cmd=" + cmd.hex())
+        # 先消费上行帧再清缓冲，避免丢弃仪器数据
+        self._read_uplink_temp()
         self._serial.flush_input()
         n = self._serial.send(cmd)
         if n == 0:
             self.sig_error.emit("指令发送失败: " + desc)
 
+    # 机械类指令（不改变炉温，无需温度检测）
+    _MECHANICAL_CMDS = {CMD.SAMPLE_PLATE_UP, CMD.SAMPLE_PLATE_DOWN,
+                        CMD.SAMPLE_PLATE_STEP, CMD.SAMPLE_PLATE_HOME,
+                        CMD.CLOSE_LID, CMD.OPEN_LID}
+
     def _send_long_duration_cmd(self, func_code, desc="", timeout=15.0):
-        """发送长耗时指令，通过上行帧温度变化判断动作完成"""
+        """发送长耗时指令，通过上行帧温度变化判断动作完成
+        机械类指令直接固定延时2秒，不检测温度"""
         import time as _t
         self._send_cmd(func_code, desc)
+        # 机械类指令：固定2秒等待
+        if func_code in self._MECHANICAL_CMDS:
+            self._sleep(2.0)
+            _log("mechanical cmd done: " + desc)
+            return
+        # 热工类指令：通过温度变化检测完成
         _, last_temp = self._read_uplink_temp()
         start = _t.time()
         stable_cycles = 0
@@ -358,6 +378,7 @@ class WeighWorker(QThread):
         f = frames[-1]
         if f is not None:
             self._last_uplink_time = time.time()
+            self._serial.update_uplink_time()
             return f["weight"], f["temperature"]
         return 0.0, None
 
@@ -367,6 +388,8 @@ class WeighWorker(QThread):
         cmd = CommandBuilder.build_move_to(position)
         _log("样盘移动: pos=" + str(position) +
              " cmd=" + cmd.hex())
+        # 先消费上行帧再清缓冲
+        self._read_uplink_temp()
         self._serial.flush_input()
         n = self._serial.send(cmd)
         if n == 0:
@@ -387,6 +410,8 @@ class WeighWorker(QThread):
         if not frames:
             return 0.0, False
         f = frames[-1]
+        if f is not None:
+            self._serial.update_uplink_time()
         return f["weight"], True
 
     def _wait_stable_with_display(self, seconds):
