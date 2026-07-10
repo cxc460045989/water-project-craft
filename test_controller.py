@@ -199,12 +199,14 @@ class TestWorker(QObject):
             self._on_test_complete()
 
     def _on_test_complete(self):
-        """测试完成 - 停止计时+触发蜂鸣"""
+        """测试完成 - 计算水分→存结果→开炉门→蜂鸣"""
         self._timer.stop()
         self._hold_timer.stop()
         self._running = False
-        self.sig_status_msg.emit("测试完成")
+        self.sig_status_msg.emit("测试完成, 计算水分...")
         self.sig_test_done.emit()
+        # 计算水分 + 存入 experiment_results + 开炉门
+        self._finalize_experiment()
         # 完成蜂鸣
         if self.cfg.beep_enabled:
             self._safe_send_cmd(CMD.BEEPER_ON, "开蜂鸣")
@@ -216,6 +218,94 @@ class TestWorker(QObject):
         if self._serial and self._serial.is_connected:
             self._safe_send_cmd(CMD.BEEPER_OFF, "关蜂鸣")
         self.sig_beeper_stop.emit()
+
+    # ========= 步骤7: 最终结果计算与存储 =========
+
+    def _finalize_experiment(self):
+        """测试完成收尾: 计算水分→写 experiment_results→开炉门"""
+        try:
+            from db import (ensure_experiment, load_experiment_samples,
+                           update_experiment_status, save_experiment_results_batch,
+                           load_params)
+            import datetime as _dt
+
+            eid = ensure_experiment()
+            samples = load_experiment_samples(eid)
+            params = load_params()
+            batch_no = _dt.datetime.now().strftime("%Y%m%d_%H%M%S")
+            test_date = _dt.datetime.now().strftime("%Y-%m-%d")
+
+            if not samples:
+                _log("finalize: 无样品数据，跳过")
+                update_experiment_status(eid, "done")
+                return
+
+            results = []
+            aw_temp = params.get("aw_temp", 105)
+            aw_time = params.get("aw_time", 60)
+            tw_temp = params.get("tw_temp", 105)
+            tw_time = params.get("tw_time", 60)
+
+            for mode in ("分析水", "全水"):
+                mode_samples = [
+                    s for s in samples
+                    if s.get("mode") == mode
+                    and s.get("sample_weight") is not None
+                    and s.get("dry_weight") is not None
+                    and s.get("sample_weight", 0) != 0
+                ]
+                if not mode_samples:
+                    continue
+
+                moistures = []
+                for s in mode_samples:
+                    m = round(
+                        (s["sample_weight"] - s["dry_weight"])
+                        / s["sample_weight"] * 100, 2
+                    )
+                    moistures.append(m)
+                    s["_moisture"] = m
+
+                avg_m = round(sum(moistures) / len(moistures), 2)
+                prec = round(max(moistures) - min(moistures), 2) if len(moistures) >= 2 else 0.0
+
+                for s in mode_samples:
+                    results.append({
+                        "experiment_id": eid,
+                        "batch_no": batch_no,
+                        "test_date": test_date,
+                        "sample_no": str(s.get("row_idx", "")),
+                        "name": s.get("name", ""),
+                        "mode": mode,
+                        "tare_weight": s.get("tare_weight"),
+                        "sample_weight": s.get("sample_weight"),
+                        "check_dry_weight": s.get("check_dry_weight"),
+                        "dry_weight": s.get("dry_weight"),
+                        "moisture": s.get("_moisture"),
+                        "avg_moisture": avg_m,
+                        "precision_val": prec,
+                        "aw_temp": aw_temp,
+                        "aw_time": aw_time,
+                        "tw_temp": tw_temp,
+                        "tw_time": tw_time,
+                    })
+
+            if results:
+                save_experiment_results_batch(results)
+                _log("finalize: 已写入 %d 条结果到 experiment_results" % len(results))
+
+            update_experiment_status(eid, "done")
+            _log("finalize: 实验状态更新为 done")
+
+            # 自动开炉门
+            self._send_long_duration_cmd(CMD.OPEN_LID, desc="实验完成开炉门")
+            self.sig_status_msg.emit("实验完成, 炉门已打开")
+
+        except Exception as e:
+            _log("finalize 失败: %s" % str(e))
+            import traceback
+            traceback.print_exc()
+            self.sig_error.emit("结果保存失败: " + str(e))
 
     # ========= 步骤2: 发送水分测试指令 =========
 

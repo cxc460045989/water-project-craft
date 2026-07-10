@@ -98,6 +98,29 @@ def _init_db(conn):
             created_at TEXT DEFAULT (datetime('now','localtime'))
         );
 
+        CREATE TABLE IF NOT EXISTS experiment_results (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            experiment_id INTEGER NOT NULL,
+            batch_no TEXT,
+            test_date TEXT,
+            sample_no TEXT,
+            name TEXT,
+            mode TEXT,
+            tare_weight REAL,
+            sample_weight REAL,
+            check_dry_weight REAL,
+            dry_weight REAL,
+            moisture REAL,
+            avg_moisture REAL,
+            precision_val REAL,
+            aw_temp REAL,
+            aw_time INTEGER,
+            tw_temp REAL,
+            tw_time INTEGER,
+            completed_at TEXT DEFAULT (datetime('now','localtime')),
+            FOREIGN KEY (experiment_id) REFERENCES experiments(id) ON DELETE CASCADE
+        );
+
         CREATE TABLE IF NOT EXISTS moisture_results (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             experiment_id INTEGER NOT NULL,
@@ -395,3 +418,99 @@ def batch_set_mode(mode):
         logger.error("[DB] batch_set_mode error:", e)
     finally:
         conn.close()
+
+
+# ========== 实验最终结果读写（仅完整完成流程后写入）==========
+
+def save_experiment_result(experiment_id, batch_no, test_date, sample_no,
+                           name, mode, tare_weight, sample_weight,
+                           check_dry_weight, dry_weight, moisture,
+                           avg_moisture, precision_val,
+                           aw_temp=None, aw_time=None, tw_temp=None, tw_time=None):
+    """写入一条最终实验结果"""
+    conn = get_conn()
+    conn.execute("""
+        INSERT INTO experiment_results
+            (experiment_id, batch_no, test_date, sample_no, name, mode,
+             tare_weight, sample_weight, check_dry_weight, dry_weight,
+             moisture, avg_moisture, precision_val,
+             aw_temp, aw_time, tw_temp, tw_time)
+        VALUES (?,?,?,?,?,?, ?,?,?,?, ?,?,?, ?,?,?,?)
+    """, (experiment_id, batch_no, test_date, sample_no, name, mode,
+          tare_weight, sample_weight, check_dry_weight, dry_weight,
+          moisture, avg_moisture, precision_val,
+          aw_temp, aw_time, tw_temp, tw_time))
+    conn.commit()
+    conn.close()
+
+
+def save_experiment_results_batch(results_list):
+    """批量写入最终实验结果
+    results_list: list of dict, 每个 dict 对应一行
+    """
+    if not results_list:
+        return
+    conn = get_conn()
+    for r in results_list:
+        conn.execute("""
+            INSERT INTO experiment_results
+                (experiment_id, batch_no, test_date, sample_no, name, mode,
+                 tare_weight, sample_weight, check_dry_weight, dry_weight,
+                 moisture, avg_moisture, precision_val,
+                 aw_temp, aw_time, tw_temp, tw_time)
+            VALUES (?,?,?,?,?,?, ?,?,?,?, ?,?,?, ?,?,?,?)
+        """, (
+            r.get("experiment_id"), r.get("batch_no"), r.get("test_date"),
+            r.get("sample_no"), r.get("name"), r.get("mode"),
+            r.get("tare_weight"), r.get("sample_weight"),
+            r.get("check_dry_weight"), r.get("dry_weight"),
+            r.get("moisture"), r.get("avg_moisture"), r.get("precision_val"),
+            r.get("aw_temp"), r.get("aw_time"), r.get("tw_temp"), r.get("tw_time"),
+        ))
+    conn.commit()
+    conn.close()
+
+
+def query_experiment_results(start_date=None, end_date=None,
+                              name_filter=None, limit=200):
+    """查询最终实验结果
+    参数:
+        start_date: 'YYYY-MM-DD' 起始
+        end_date:   'YYYY-MM-DD' 结束
+        name_filter: 样品名称模糊匹配
+        limit: 最大返回行数
+    返回: list of dict
+    """
+    conn = get_conn()
+    sql = "SELECT * FROM experiment_results WHERE 1=1"
+    params = []
+    if start_date:
+        sql += " AND test_date >= ?"
+        params.append(start_date)
+    if end_date:
+        sql += " AND test_date <= ?"
+        params.append(end_date)
+    if name_filter:
+        sql += " AND name LIKE ?"
+        params.append("%" + name_filter + "%")
+    sql += " ORDER BY id DESC LIMIT ?"
+    params.append(limit)
+    rows = conn.execute(sql, params).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def delete_experiment_result(result_id):
+    """删除单条实验结果"""
+    conn = get_conn()
+    conn.execute("DELETE FROM experiment_results WHERE id=?", (result_id,))
+    conn.commit()
+    conn.close()
+
+
+def delete_experiment_results_by_experiment(experiment_id):
+    """删除某实验的全部结果"""
+    conn = get_conn()
+    conn.execute("DELETE FROM experiment_results WHERE experiment_id=?", (experiment_id,))
+    conn.commit()
+    conn.close()
