@@ -636,7 +636,7 @@ class MoistureAnalyzer(QMainWindow):
         t.verticalHeader().setVisible(True)
         t.setSelectionBehavior(QAbstractItemView.SelectItems)
         t.setSelectionMode(QAbstractItemView.ExtendedSelection)
-        t.setEditTriggers(QAbstractItemView.DoubleClicked | QAbstractItemView.EditKeyPressed)
+        t.setEditTriggers(QAbstractItemView.CurrentChanged | QAbstractItemView.EditKeyPressed)
         t.setTabKeyNavigation(True)
         t.setWordWrap(True)
         t.setShowGrid(True)
@@ -653,6 +653,11 @@ class MoistureAnalyzer(QMainWindow):
                     i.setFlags(i.flags() & ~Qt.ItemIsEditable)
                     i.setTextAlignment(Qt.AlignCenter)
                     t.setItem(r, c, i)
+                else:
+                    # 确保 col 1（模式列）始终不可编辑（单击即切换模式）
+                    if c == 1:
+                        item = t.item(r, c)
+                        item.setFlags(item.flags() & ~Qt.ItemIsEditable)
         self._table = t; t.installEventFilter(self); t.cellDoubleClicked.connect(self._on_cell_double_clicked)
         t.cellChanged.connect(self._on_cell_changed)
         pl.addWidget(t)
@@ -754,10 +759,6 @@ class MoistureAnalyzer(QMainWindow):
         ctrl = WeighController(self)
         ctrl.set_table(self._table)
 
-        def on_countdown(remaining):
-            phase = ctrl._countdown_phase
-            dlg.show_countdown(phase, remaining)
-
         def on_weigh_progress(info):
             if info["phase"] == "tare":
                 dlg.show_weighing(info["row"], info["name"], info["weight"])
@@ -793,11 +794,10 @@ class MoistureAnalyzer(QMainWindow):
         def on_add_sample_prompt():
             dlg.show_add_sample_prompt()
 
-        ctrl.sig_countdown.connect(on_countdown)
-        ctrl.sig_countdown_finish.connect(lambda phase: None)
         ctrl.sig_weighing_progress.connect(on_weigh_progress)
         ctrl.sig_weighing_done.connect(on_weigh_done)
         ctrl.sig_add_sample_prompt.connect(on_add_sample_prompt)
+        ctrl.sig_status_msg.connect(dlg.show_status)
 
         dlg.start_sample_clicked.connect(ctrl.start_sample_weigh)
 
@@ -870,10 +870,6 @@ class MoistureAnalyzer(QMainWindow):
         ctrl = WeighController(self)
         ctrl.set_table(self._table)
 
-        def on_countdown(remaining):
-            phase = ctrl._countdown_phase
-            dlg.show_countdown(phase, remaining)
-
         def on_weigh_progress(info):
             if info["phase"] == "tare":
                 dlg.show_weighing(info["row"], info["name"], info["weight"])
@@ -913,11 +909,10 @@ class MoistureAnalyzer(QMainWindow):
         def on_add_sample_prompt():
             dlg.show_add_sample_prompt()
 
-        ctrl.sig_countdown.connect(on_countdown)
-        ctrl.sig_countdown_finish.connect(lambda phase: None)
         ctrl.sig_weighing_progress.connect(on_weigh_progress)
         ctrl.sig_weighing_done.connect(on_weigh_done)
         ctrl.sig_add_sample_prompt.connect(on_add_sample_prompt)
+        ctrl.sig_status_msg.connect(dlg.show_status)
 
         dlg.start_sample_clicked.connect(ctrl.start_sample_weigh)
 
@@ -1130,14 +1125,21 @@ class MoistureAnalyzer(QMainWindow):
                     if item: item.setText(txt)
                 return True
             if k in (Qt.Key_Return, Qt.Key_Enter):
-                r = obj.currentRow()+1; c = obj.currentColumn()
-                if r < obj.rowCount(): obj.setCurrentCell(r,c)
+                r = obj.currentRow(); c = obj.currentColumn()
+                if c == 0 and r + 1 < obj.rowCount():
+                    # 样品名称列：跳下一行并自动进入编辑
+                    obj.setCurrentCell(r + 1, 0)
+                    item = obj.item(r + 1, 0)
+                    if item and (item.flags() & Qt.ItemIsEditable):
+                        obj.editItem(item)
+                elif r + 1 < obj.rowCount():
+                    obj.setCurrentCell(r + 1, c)
                 return True
         if obj is self._table and event.type() == QEvent.MouseButtonDblClick:
             idx = obj.indexAt(event.pos())
             if idx.isValid() and idx.column() == 1:
                 # 采样数据列采用等宽字体
-                self._on_dblclick_mode(idx.row(), idx.column())
+                self._on_cell_double_clicked(idx.row(), idx.column())
                 return True
         return super().eventFilter(obj, event)
 
@@ -1227,10 +1229,6 @@ class MoistureAnalyzer(QMainWindow):
                 ctrl.set_table(self._table)
                 ctrl.set_serial_manager(self.serial_mgr)
 
-                def on_countdown_single(remaining):
-                    phase = ctrl._countdown_phase
-                    dlg.show_countdown(phase, remaining)
-
                 def on_weigh_progress_single(info):
                     if info["phase"] == "tare":
                         dlg.show_weighing(info["row"], info["name"], info["weight"])
@@ -1283,11 +1281,10 @@ class MoistureAnalyzer(QMainWindow):
                 def on_weight_out_of_range(name, weight, lo, hi):
                     dlg.show_single_out_of_range(name, weight, lo, hi)
 
-                ctrl.sig_countdown.connect(on_countdown_single)
-                ctrl.sig_countdown_finish.connect(lambda phase: None)
                 ctrl.sig_weighing_progress.connect(on_weigh_progress_single)
                 ctrl.sig_weighing_done.connect(on_weigh_done_single)
                 ctrl.sig_add_sample_prompt.connect(on_add_sample_prompt_single)
+                ctrl.sig_status_msg.connect(dlg.show_status)
                 ctrl.sig_confirm_weigh.connect(on_confirm_weigh)
                 ctrl.sig_real_time_sample_weight.connect(on_real_time_weight)
                 ctrl.sig_single_weigh_done.connect(on_single_weigh_done)
@@ -1317,10 +1314,6 @@ class MoistureAnalyzer(QMainWindow):
             ctrl = WeighController(self)
             ctrl.set_table(self._table)
             ctrl.set_serial_manager(self.serial_mgr)
-
-            def on_countdown(remaining):
-                phase = ctrl._countdown_phase
-                dlg.show_countdown(phase, remaining)
 
             def on_weigh_progress(info):
                 if info["phase"] == "tare":
@@ -1365,11 +1358,10 @@ class MoistureAnalyzer(QMainWindow):
             def on_add_sample_prompt():
                 dlg.show_add_sample_prompt()
 
-            ctrl.sig_countdown.connect(on_countdown)
-            ctrl.sig_countdown_finish.connect(lambda phase: None)
             ctrl.sig_weighing_progress.connect(on_weigh_progress)
             ctrl.sig_weighing_done.connect(on_weigh_done)
             ctrl.sig_add_sample_prompt.connect(on_add_sample_prompt)
+            ctrl.sig_status_msg.connect(dlg.show_status)
 
             dlg.start_sample_clicked.connect(ctrl.start_sample_weigh)
 

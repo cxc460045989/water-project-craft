@@ -118,18 +118,15 @@ class WeighDialog(QDialog):
 
     # ---- 状态切换接口 ----
 
-    def show_countdown(self, phase, remaining):
-        """显示倒计时"""
-        self._phase = phase
+    def show_status(self, msg):
+        """显示硬件动作状态提示"""
+        self._phase = "status"
         self.btn_action.setVisible(False)
+        self.btn_confirm.setVisible(False)
         self.btn_cancel.setVisible(True)
         self.btn_cancel.setEnabled(False)
-
-        if phase in ("close_for_tare", "close_for_sample"):
-            self.title_label.setText("炉盖关闭中，请稍候...")
-        else:
-            self.title_label.setText("炉盖开启中，请稍候...")
-        self.sub_label.setText("倒计时 " + str(remaining) + " 秒")
+        self.title_label.setText(msg)
+        self.sub_label.setText("")
         self.weight_label.setText("")
 
     def show_weighing(self, row, name, weight):

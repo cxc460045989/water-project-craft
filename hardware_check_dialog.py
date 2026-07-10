@@ -131,9 +131,6 @@ class HardwareCheckDialog(QDialog):
         self._le_pos.setAlignment(Qt.AlignCenter)
         h.addWidget(self._le_pos)
         h.addWidget(QLabel(" 号样位 "))
-        self._cb_auto_lower = QCheckBox("移动后自动下降")
-        self._cb_auto_lower.setChecked(False)
-        h.addWidget(self._cb_auto_lower)
         gl.addLayout(h, 2, 0, 1, 2)
 
         cb_widget = QWidget()
@@ -262,9 +259,6 @@ class HardwareCheckDialog(QDialog):
         from protocol_layer import CommandBuilder
         cmd = CommandBuilder.build_move_to(pos)
         self.send_command("移动到" + str(pos) + "号位", cmd)
-        if self._cb_auto_lower.isChecked():
-            from PySide2.QtCore import QTimer
-            QTimer.singleShot(3000, lambda: self.send_command("样盘下降(自动)", 0x15))
 
     def send_command(self, label, func_code_or_bytes):
         if not self._mgr or not self._mgr.is_connected:

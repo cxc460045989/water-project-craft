@@ -20,7 +20,6 @@ CMD_INTERVAL_S = 0.15
 UPLINK_TIMEOUT_S = 3.0
 TARE_TARGET_COL = 2
 SAMPLE_TARGET_COL = 3
-COUNTDOWN_SEC = 10
 WEIGHT_REPORT_INTERVAL_S = 1.0
 
 
@@ -104,6 +103,7 @@ class WeighWorker(QThread):
     # ===== 批量称坩埚 =====
     def _batch_tare(self):
         _log("批量坩埚称量开始, 共 " + str(len(self._valid_rows)) + " 个")
+        self.sig_status_msg.emit("正在关闭炉盖...")
         self._send_long_duration_cmd(CMD.CLOSE_LID, desc="关炉门")
         for row, name, mode in self._valid_rows:
             if not self._running:
@@ -113,6 +113,7 @@ class WeighWorker(QThread):
             self._weigh_one_tare(row, name)
         _log("批量坩埚称量完成")
         self._send_long_duration_cmd(CMD.SAMPLE_PLATE_UP, desc="样盘上升")
+        self.sig_status_msg.emit("正在打开炉盖...")
         self._send_long_duration_cmd(CMD.OPEN_LID, desc="开炉门")
         self._send_cmd(CMD.BEEPER_1S, desc="蜂鸣提示")
         self.sig_weigh_done.emit("tare")
@@ -120,6 +121,7 @@ class WeighWorker(QThread):
     # ===== 批量称样品 =====
     def _batch_sample(self):
         _log("批量样品称量开始, 共 " + str(len(self._valid_rows)) + " 个")
+        self.sig_status_msg.emit("正在关闭炉盖...")
         self._send_long_duration_cmd(CMD.CLOSE_LID, desc="关炉门")
         for row, name, mode in self._valid_rows:
             if not self._running:
@@ -129,6 +131,7 @@ class WeighWorker(QThread):
             self._weigh_one_sample(row, name)
         _log("批量样品称量完成")
         self._send_long_duration_cmd(CMD.SAMPLE_PLATE_UP, desc="样盘上升")
+        self.sig_status_msg.emit("正在打开炉盖...")
         self._send_long_duration_cmd(CMD.OPEN_LID, desc="开炉门")
         self._send_cmd(CMD.BEEPER_1S, desc="蜂鸣提示")
         self.sig_weigh_done.emit("sample")
@@ -316,14 +319,11 @@ class WeighWorker(QThread):
         return ok
 
     def _send_cmd(self, func_code, desc=""):
-        """发送固定4字节指令，发送前清缓冲区"""
+        """发送固定4字节指令"""
         from protocol_layer import CommandBuilder
         cmd = CommandBuilder.build_command(func_code)
         _log("发送指令: " + desc + " code=0x" + format(func_code, "02X") +
              " cmd=" + cmd.hex())
-        # 先消费上行帧再清缓冲，避免丢弃仪器数据
-        self._read_uplink_temp()
-        self._serial.flush_input()
         n = self._serial.send(cmd)
         if n == 0:
             self.sig_error.emit("指令发送失败: " + desc)
@@ -383,14 +383,11 @@ class WeighWorker(QThread):
         return 0.0, None
 
     def _send_move_to(self, position):
-        """移动样盘到指定位，发送前清缓冲区"""
+        """移动样盘到指定位"""
         from protocol_layer import CommandBuilder
         cmd = CommandBuilder.build_move_to(position)
         _log("样盘移动: pos=" + str(position) +
              " cmd=" + cmd.hex())
-        # 先消费上行帧再清缓冲
-        self._read_uplink_temp()
-        self._serial.flush_input()
         n = self._serial.send(cmd)
         if n == 0:
             self.sig_error.emit("样盘移动指令发送失败 pos=" + str(position))
@@ -449,8 +446,6 @@ class WeighWorker(QThread):
 
 
 class WeighController(QObject):
-    sig_countdown = Signal(int)
-    sig_countdown_finish = Signal(str)
     sig_weighing_progress = Signal(dict)
     sig_weighing_done = Signal(str)
     sig_add_sample_prompt = Signal()
@@ -465,10 +460,6 @@ class WeighController(QObject):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._timer = QTimer(self)
-        self._timer.timeout.connect(self._on_tick)
-        self._countdown_remaining = 0
-        self._countdown_phase = ""
         self._valid_rows = []
         self._weigh_phase = ""
         self._table_ref = None
@@ -485,22 +476,25 @@ class WeighController(QObject):
         self._valid_rows = self._filter_valid(valid_rows)
         self._weigh_phase = "tare"
         _log("start_tare_weigh: valid_rows=" + str(self._valid_rows))
-        self._start_countdown("close_for_tare")
+        self.sig_status_msg.emit("准备称量器皿，正在初始化...")
+        self._start_worker("tare")
 
     def start_open_lid(self):
         _log("start_open_lid")
-        self._start_countdown("open")
+        self.sig_add_sample_prompt.emit()
 
     def start_sample_weigh(self):
         self._weigh_phase = "sample"
         _log("start_sample_weigh: valid_rows=" + str(self._valid_rows))
-        self._start_countdown("close_for_sample")
+        self.sig_status_msg.emit("准备称量样品，正在初始化...")
+        self._start_worker("sample")
 
     def start_single_sample_weigh(self, valid_rows):
         self._valid_rows = self._filter_valid(valid_rows)
         self._weigh_phase = "single_sample"
         _log("start_single_sample_weigh: valid_rows=" + str(self._valid_rows))
-        self._start_countdown("close_for_sample")
+        self.sig_status_msg.emit("准备称量样品，正在初始化...")
+        self._start_worker("single_sample")
 
     def confirm_current_weigh(self):
         if self._worker and hasattr(self._worker, "confirm_current_weigh"):
@@ -519,26 +513,6 @@ class WeighController(QObject):
             mode = mode_item.text().strip() if mode_item and mode_item.text() else "分析水"
             result.append((r, name, mode))
         return result
-
-    def _start_countdown(self, phase):
-        self._countdown_phase = phase
-        self._countdown_remaining = COUNTDOWN_SEC
-        self.sig_countdown.emit(self._countdown_remaining)
-        self._timer.start(1000)
-
-    def _on_tick(self):
-        self._countdown_remaining -= 1
-        if self._countdown_remaining <= 0:
-            self._timer.stop()
-            self.sig_countdown_finish.emit(self._countdown_phase)
-            if self._countdown_phase == "close_for_tare":
-                self._start_worker("tare")
-            elif self._countdown_phase == "close_for_sample":
-                self._start_worker("sample")
-            elif self._countdown_phase == "open":
-                self.sig_add_sample_prompt.emit()
-        else:
-            self.sig_countdown.emit(self._countdown_remaining)
 
     def _start_worker(self, phase):
         if self._serial_mgr is None:
@@ -595,9 +569,11 @@ class WeighController(QObject):
         if not db_key:
             return
         if phase == "sample":
-            upsert_experiment_sample(eid, row,
-                                     sample_weight=weight,
-                                     **{k: v for k, v in extra.items() if k in ("total_weight", "tare_weight")})
+            tare_w = extra.get("tare_weight")
+            kwargs = {"sample_weight": weight}
+            if tare_w is not None:
+                kwargs["tare_weight"] = tare_w
+            upsert_experiment_sample(eid, row, **kwargs)
         else:
             upsert_experiment_sample(eid, row, **{db_key: weight})
         try:
@@ -626,7 +602,6 @@ class WeighController(QObject):
              " weight=" + str(weight) + " phase=" + phase)
 
     def stop(self):
-        self._timer.stop()
         if self._worker and self._worker.isRunning():
             self._worker.stop()
             self._worker.wait(3000)
