@@ -170,6 +170,13 @@ class WeighWorker(QThread):
                 self._send_cmd(CMD.BEEPER_1S, desc="蜂鸣提示加样")
                 self._sleep(CMD_INTERVAL_S)
                 tare_weight = self._get_tare_weight(row)
+                # 发送天平数据到仪器 (5A 58 ... 协议)
+                total_raw, ok = self._read_uplink_weight()
+                if ok:
+                    sample_raw = round(total_raw - tare_weight, 4) if tare_weight else round(total_raw, 4)
+                    self._send_send_weight_to_instrument(sample_raw)
+                    _log("发送天平数据到仪器: 总重={:.4f}g 样重={:.4f}g".format(
+                        total_raw, sample_raw))
                 confirmed = self._wait_confirm_with_display(tare_weight)
                 if not self._running:
                     return
