@@ -846,6 +846,7 @@ class MoistureAnalyzer(QMainWindow):
         ctrl.sig_weighing_done.connect(on_weigh_done)
         ctrl.sig_add_sample_prompt.connect(on_add_sample_prompt)
         ctrl.sig_status_msg.connect(dlg.show_status)
+        ctrl.sig_error.connect(lambda msg: QMessageBox.warning(self, "称量错误", msg))
 
         dlg.start_sample_clicked.connect(ctrl.start_sample_weigh)
 
@@ -1233,6 +1234,7 @@ class MoistureAnalyzer(QMainWindow):
                 ctrl.sig_weighing_done.connect(on_weigh_done_single)
                 ctrl.sig_add_sample_prompt.connect(on_add_sample_prompt_single)
                 ctrl.sig_status_msg.connect(dlg.show_status)
+                ctrl.sig_error.connect(lambda msg: QMessageBox.warning(self, "称量错误", msg))
                 ctrl.sig_confirm_weigh.connect(on_confirm_weigh)
                 ctrl.sig_real_time_sample_weight.connect(on_real_time_weight)
                 ctrl.sig_single_weigh_done.connect(on_single_weigh_done)
@@ -1310,6 +1312,7 @@ class MoistureAnalyzer(QMainWindow):
             ctrl.sig_weighing_done.connect(on_weigh_done)
             ctrl.sig_add_sample_prompt.connect(on_add_sample_prompt)
             ctrl.sig_status_msg.connect(dlg.show_status)
+            ctrl.sig_error.connect(lambda msg: QMessageBox.warning(self, "称量错误", msg))
 
             dlg.start_sample_clicked.connect(ctrl.start_sample_weigh)
 

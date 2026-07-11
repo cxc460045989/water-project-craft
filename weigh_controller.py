@@ -18,6 +18,10 @@ STABLE_WAIT_S = 5.0
 BEEPER_DURATION_S = 10
 CMD_INTERVAL_S = 0.15
 UPLINK_TIMEOUT_S = 3.0
+TARE_SETTLE_S = 0.5          # TARE 指令后天平稳定等待时间
+MECHANICAL_WAIT_S = 3.0      # 机械动作（样盘升降）等待时间
+MIN_VALID_READINGS = 3       # 稳定检测最少有效读数
+STABLE_THRESHOLD_G = 0.0005  # 天平稳定判定阈值(g)
 TARE_TARGET_COL = 2
 SAMPLE_TARGET_COL = 3
 WEIGHT_REPORT_INTERVAL_S = 1.0
@@ -141,7 +145,6 @@ class WeighWorker(QThread):
         _log("单个称量样品开始, 共 " + str(len(self._valid_rows)) + " 个")
         self._send_cmd(CMD.ENTER_WEIGH_MODE, desc="进入称量样重状态")
         self._sleep(CMD_INTERVAL_S)
-        self._send_long_duration_cmd(CMD.CLOSE_LID, desc="关炉门")
         for row, name, mode in self._valid_rows:
             if not self._running:
                 return
@@ -157,9 +160,13 @@ class WeighWorker(QThread):
                     break
                 self._sleep(WAIT_AFTER_HANDSHAKE_S)
                 self._send_cmd(CMD.TARE, desc="天平清零")
-                self._sleep(CMD_INTERVAL_S)
+                _log("天平清零已发送, 等待 " + str(TARE_SETTLE_S) + "s 让天平稳定...")
+                self._sleep(TARE_SETTLE_S)
+                if not self._do_handshake_with_retry():
+                    self.sig_error.emit("单个称量 row=" + str(row) + " 天平清零后握手失败，跳过")
+                    break
                 self._send_cmd(CMD.SAMPLE_PLATE_DOWN, desc="样盘下降")
-                self._sleep(CMD_INTERVAL_S)
+                self._sleep(MECHANICAL_WAIT_S)
                 self._send_cmd(CMD.BEEPER_1S, desc="蜂鸣提示加样")
                 self._sleep(CMD_INTERVAL_S)
                 tare_weight = self._get_tare_weight(row)
@@ -187,7 +194,6 @@ class WeighWorker(QThread):
                 break
         _log("单个称量全部完成")
         self._send_long_duration_cmd(CMD.SAMPLE_PLATE_UP, desc="样盘上升")
-        self._send_long_duration_cmd(CMD.OPEN_LID, desc="开炉门")
         self._send_cmd(CMD.EXIT_WEIGH_MODE, desc="解除称重状态")
         self.sig_weigh_done.emit("sample")
 
@@ -256,11 +262,15 @@ class WeighWorker(QThread):
             return
         self._sleep(WAIT_AFTER_HANDSHAKE_S)
         self._send_cmd(CMD.TARE, desc="天平清零")
-        self._sleep(CMD_INTERVAL_S)
+        _log("天平清零已发送, 等待 " + str(TARE_SETTLE_S) + "s 让天平稳定...")
+        self._sleep(TARE_SETTLE_S)
+        if not self._do_handshake_with_retry():
+            self.sig_error.emit("坩埚称量 row=" + str(row) + " 天平清零后握手失败，跳过")
+            return
         self._send_long_duration_cmd(CMD.SAMPLE_PLATE_DOWN, desc="样盘下降")
 
         if not self._do_handshake_with_retry():
-            self.sig_error.emit("坩埚称量 row=" + str(row) + " 稳定握手失败，跳过")
+            self.sig_error.emit("坩埚称量 row=" + str(row) + " 样盘下降后握手失败，跳过")
             return
         weight = self._wait_stable_with_display(STABLE_WAIT_S)
         weight = round(weight, 4)
@@ -282,11 +292,15 @@ class WeighWorker(QThread):
             return
         self._sleep(WAIT_AFTER_HANDSHAKE_S)
         self._send_cmd(CMD.TARE, desc="天平清零")
-        self._sleep(CMD_INTERVAL_S)
+        _log("天平清零已发送, 等待 " + str(TARE_SETTLE_S) + "s 让天平稳定...")
+        self._sleep(TARE_SETTLE_S)
+        if not self._do_handshake_with_retry():
+            self.sig_error.emit("样品称量 row=" + str(row) + " 天平清零后握手失败，跳过")
+            return
         self._send_long_duration_cmd(CMD.SAMPLE_PLATE_DOWN, desc="样盘下降")
 
         if not self._do_handshake_with_retry():
-            self.sig_error.emit("样品称量 row=" + str(row) + " 稳定握手失败，跳过")
+            self.sig_error.emit("样品称量 row=" + str(row) + " 样盘下降后握手失败，跳过")
             return
         total_weight = self._wait_stable_with_display(STABLE_WAIT_S)
         total_weight = round(total_weight, 4)
@@ -308,15 +322,66 @@ class WeighWorker(QThread):
 
     # ===== 串口工具方法 =====
     def _do_handshake_with_retry(self):
-        """统一调用 protocol_layer.handshake，带上行链路预检"""
-        from protocol_layer import handshake
-        ok = handshake(self._serial, retries=HANDSHAKE_RETRIES, wait_ms=100,
-                       last_uplink_time=self._serial.last_uplink_time, timeout=UPLINK_TIMEOUT_S)
-        if ok:
-            _log("握手成功")
-        else:
-            _log("握手失败，上行帧最近时间: " + str(self._serial.last_uplink_time))
-        return ok
+        """握手指令 — 不限次数重试，每次等待上行帧后尝试，60秒超时
+        超时后通过 sig_error 通知 UI 弹出提示框"""
+        from protocol_layer import CommandBuilder, UplinkBuffer
+        import time as _t
+
+        deadline = _t.time() + 60.0
+        attempt = 0
+
+        while self._running and _t.time() < deadline:
+            attempt += 1
+            # 1. 等待上行帧到达，证明链路正常且设备空闲
+            waited = _t.time()
+            frame_received = False
+            while self._running and (_t.time() - waited) < 3.0:
+                if _t.time() >= deadline:
+                    break
+                try:
+                    raw = self._serial.read_all()
+                except Exception:
+                    raw = b""
+                if raw:
+                    buf = UplinkBuffer()
+                    frames = buf.feed(raw)
+                    if frames:
+                        self._last_uplink_time = _t.time()
+                        self._serial.update_uplink_time()
+                        frame_received = True
+                        _log("握手前收到上行帧 (第" + str(attempt) + "次尝试)")
+                        break
+                self._sleep(0.3)
+
+            # 2. 清空缓冲，发送握手
+            try:
+                self._serial.flush_input()
+            except Exception:
+                pass
+            cmd = CommandBuilder.build_command(CMD.HANDSHAKE)
+            n = self._serial.send(cmd)
+            if n > 0:
+                self._sleep(0.15)
+                try:
+                    resp = self._serial.read_all()
+                except Exception:
+                    resp = b""
+                if resp and b"OK" in resp:
+                    _log("握手成功 (第" + str(attempt) + "次尝试)")
+                    return True
+
+            remaining = deadline - _t.time()
+            _log("握手未成功 (第" + str(attempt) + "次), 剩余{:.0f}s".format(remaining)
+                 if remaining > 0 else "握手未成功 (第" + str(attempt) + "次), 已超时")
+            if remaining > 0.5:
+                self._sleep(0.5)
+
+        _log("握手超时(60s), 共尝试" + str(attempt) + "次, 设备无响应")
+        self.sig_error.emit("设备握手超时(1分钟无响应)，请检查:\n"
+                           "1. 仪器是否已开机并联机\n"
+                           "2. 串口线是否连接正常\n"
+                           "3. 可尝试重启程序后重试")
+        return False
 
     def _send_cmd(self, func_code, desc=""):
         """发送固定4字节指令"""
@@ -335,12 +400,12 @@ class WeighWorker(QThread):
 
     def _send_long_duration_cmd(self, func_code, desc="", timeout=15.0):
         """发送长耗时指令，通过上行帧温度变化判断动作完成
-        机械类指令直接固定延时2秒，不检测温度"""
+        机械类指令固定延时 MECHANICAL_WAIT_S 秒，不检测温度"""
         import time as _t
         self._send_cmd(func_code, desc)
-        # 机械类指令：固定2秒等待
+        # 机械类指令：固定 MECHANICAL_WAIT_S 等待
         if func_code in self._MECHANICAL_CMDS:
-            self._sleep(2.0)
+            self._sleep(MECHANICAL_WAIT_S)
             _log("mechanical cmd done: " + desc)
             return
         # 热工类指令：通过温度变化检测完成
@@ -409,24 +474,44 @@ class WeighWorker(QThread):
         f = frames[-1]
         if f is not None:
             self._serial.update_uplink_time()
+            _log("上行帧: raw=" + f.get("raw_str", "?") +
+                 " 重量={:.4f}g 温度={:.1f}C 联机={} 按键={}".format(
+                 f["weight"], f["temperature"], f["online"], f["btn_pressed"]))
         return f["weight"], True
 
-    def _wait_stable_with_display(self, seconds):
-        end_time = time.time() + seconds
-        last_weight = 0.0
-        while time.time() < end_time:
+    def _wait_stable_with_display(self, max_wait_s):
+        """等待天平读数稳定 — 真稳定性检测版本
+        - 至少获取 MIN_VALID_READINGS 个有效读数
+        - 连续两次差值 < STABLE_THRESHOLD_G 判定为稳定
+        - max_wait_s 为最大等待上限（超时后若已有读数则用最后值，否则报错）
+        """
+        start = time.time()
+        readings = []
+        while time.time() - start < max_wait_s:
             if not self._running:
                 break
             weight, ok = self._read_uplink_weight()
             if ok:
-                last_weight = weight
+                readings.append(weight)
                 self.sig_weight_update.emit(weight)
-            self._sleep(0.1)
-        weight, ok = self._read_uplink_weight()
-        if ok:
-            last_weight = weight
-            self.sig_weight_update.emit(weight)
-        return last_weight
+                _log("天平读数: {:.4f}g (第{}个, 已耗时{:.1f}s)".format(
+                    weight, len(readings), time.time() - start))
+                if len(readings) >= MIN_VALID_READINGS:
+                    diff = abs(readings[-1] - readings[-2])
+                    if diff < STABLE_THRESHOLD_G:
+                        _log("天平已稳定: {:.4f}g (差值{:.6f}g < {:.6f}g)".format(
+                            weight, diff, STABLE_THRESHOLD_G))
+                        return weight
+            self._sleep(0.15)
+        # 超时处理
+        if readings:
+            last = readings[-1]
+            _log("稳定等待超时({:.1f}s), 共{}个读数, 使用最后值: {:.4f}g".format(
+                max_wait_s, len(readings), last))
+            return last
+        _log("ERROR: 稳定等待超时({:.1f}s), 无有效天平数据!".format(max_wait_s))
+        self.sig_error.emit("天平无数据，请检查仪器联机状态")
+        return 0.0
 
     def _get_tare_weight(self, row):
         if self._table_ref is None:
