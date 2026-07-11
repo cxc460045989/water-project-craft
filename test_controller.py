@@ -226,12 +226,13 @@ class TestWorker(QObject):
         try:
             from db import (ensure_experiment, load_experiment_samples,
                            update_experiment_status, save_experiment_results_batch,
-                           load_params)
+                           load_params, load_experiment)
             import datetime as _dt
 
             eid = ensure_experiment()
             samples = load_experiment_samples(eid)
             params = load_params()
+            exp_record, _ = load_experiment(eid)
             batch_no = _dt.datetime.now().strftime("%Y%m%d_%H%M%S")
             test_date = _dt.datetime.now().strftime("%Y-%m-%d")
 
@@ -245,6 +246,8 @@ class TestWorker(QObject):
             aw_time = params.get("aw_time", 60)
             tw_temp = params.get("tw_temp", 105)
             tw_time = params.get("tw_time", 60)
+            单位 = (exp_record or {}).get("unit", "") or params.get("unit", "")
+            化验员 = (exp_record or {}).get("tech", "") or params.get("hy_current", "")
 
             for mode in ("分析水", "全水"):
                 mode_samples = [
@@ -271,23 +274,25 @@ class TestWorker(QObject):
 
                 for s in mode_samples:
                     results.append({
-                        "experiment_id": eid,
-                        "batch_no": batch_no,
-                        "test_date": test_date,
-                        "sample_no": str(s.get("row_idx", "")),
-                        "name": s.get("name", ""),
-                        "mode": mode,
-                        "tare_weight": s.get("tare_weight"),
-                        "sample_weight": s.get("sample_weight"),
-                        "check_dry_weight": s.get("check_dry_weight"),
-                        "dry_weight": s.get("dry_weight"),
-                        "moisture": s.get("_moisture"),
-                        "avg_moisture": avg_m,
-                        "precision_val": prec,
-                        "aw_temp": aw_temp,
-                        "aw_time": aw_time,
-                        "tw_temp": tw_temp,
-                        "tw_time": tw_time,
+                        "实验ID": eid,
+                        "批次号": batch_no,
+                        "试验日期": test_date,
+                        "样品编号": str(s.get("row_idx", "")),
+                        "样品名": s.get("name", ""),
+                        "模式": mode,
+                        "器皿重": s.get("tare_weight"),
+                        "样重": s.get("sample_weight"),
+                        "检查性干燥重": s.get("check_dry_weight"),
+                        "干燥后重": s.get("dry_weight"),
+                        "水分": s.get("_moisture"),
+                        "平均水分": avg_m,
+                        "精密度": prec,
+                        "分析水温度": aw_temp,
+                        "分析水时间": aw_time,
+                        "全水温度": tw_temp,
+                        "全水时间": tw_time,
+                        "测试单位": 单位,
+                        "化验员": 化验员,
                     })
 
             if results:

@@ -34,14 +34,14 @@ for days_ago in range(0, 5):
             row_id += 1
             rows.append((-1, test_date.strftime('%Y-%m-%d'), batch_no, str(row_id),
                          name, _mode, tare, sample, dry, dry, moisture,
-                         None, None, 105, 60, 105, 60))
+                         None, None, 105, 60, 105, 60, '测试单位', '测试员'))
         if weights:
             avg_m = round(sum(weights) / len(weights), 2)
             prec = round(max(weights) - min(weights), 2) if len(weights) >= 2 else 0.0
             for i in range(len(rows) - len(weights), len(rows)):
                 r = list(rows[i]); r[11] = avg_m; r[12] = prec; rows[i] = tuple(r)
 
-conn.executemany('INSERT INTO experiment_results (experiment_id, test_date, batch_no, sample_no, name, mode, tare_weight, sample_weight, check_dry_weight, dry_weight, moisture, avg_moisture, precision_val, aw_temp, aw_time, tw_temp, tw_time) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)', rows)
+conn.executemany('INSERT INTO experiment_results ("实验ID", "试验日期", "批次号", "样品编号", "样品名", "模式", "器皿重", "样重", "检查性干燥重", "干燥后重", "水分", "平均水分", "精密度", "分析水温度", "分析水时间", "全水温度", "全水时间", "测试单位", "化验员") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)', rows)
 conn.commit()
 count = conn.execute("SELECT COUNT(*) FROM experiment_results WHERE batch_no LIKE 'MOCK_%'").fetchone()[0]
 conn.close()

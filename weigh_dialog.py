@@ -20,7 +20,7 @@ class WeighDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("称量提示")
         self.setWindowFlags(self.windowFlags() & ~Qt.WindowContextHelpButtonHint)
-        self.setFixedSize(480, 320)
+        self.setFixedSize(576, 384)
         self.setModal(True)
         self._build_ui()
         self._apply_style()
@@ -29,7 +29,7 @@ class WeighDialog(QDialog):
     def _build_ui(self):
         layout = QVBoxLayout(self)
         layout.setSpacing(0)
-        layout.setContentsMargins(40, 28, 40, 24)
+        layout.setContentsMargins(48, 34, 48, 28)
 
         # ---- 第一行：状态/主标题 ----
         self.title_label = QLabel()
@@ -86,18 +86,18 @@ class WeighDialog(QDialog):
                 background-color: #E8EBF0;
             }
             QLabel#weighTitle {
-                font-size: 20px;
+                font-size: 28px;
                 font-weight: bold;
                 color: #1F2937;
                 background: transparent;
             }
             QLabel#weighSub {
-                font-size: 15px;
+                font-size: 20px;
                 color: #4B5563;
                 background: transparent;
             }
             QLabel#weighWeight {
-                font-size: 42px;
+                font-size: 56px;
                 font-weight: bold;
                 color: #0D47A1;
                 font-family: "Courier New", "Consolas", "DejaVu Sans Mono", monospace;

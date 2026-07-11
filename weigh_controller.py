@@ -20,6 +20,7 @@ CMD_INTERVAL_S = 0.15
 UPLINK_TIMEOUT_S = 3.0
 TARE_SETTLE_S = 0.5          # TARE 指令后天平稳定等待时间
 MECHANICAL_WAIT_S = 3.0      # 机械动作（样盘升降）等待时间
+LID_WAIT_S = 15.0            # 炉盖开关后等待时间
 MIN_VALID_READINGS = 3       # 稳定检测最少有效读数
 STABLE_THRESHOLD_G = 0.0005  # 天平稳定判定阈值(g)
 TARE_TARGET_COL = 2
@@ -42,7 +43,7 @@ class WeighWorker(QThread):
     sig_confirm_weigh = Signal(int, str, float)
     sig_single_weigh_done = Signal(int, float)
     sig_weight_out_of_range = Signal(str, float, float, float)
-    sig_status_msg = Signal(str)
+    sig_status_msg = Signal(str)  # 使用 BlockingQueuedConnection 确保 UI 在串口指令前刷新
     sig_real_time_sample_weight = Signal(float)
 
     def __init__(self, serial_mgr, parent=None):
@@ -107,7 +108,6 @@ class WeighWorker(QThread):
     # ===== 批量称坩埚 =====
     def _batch_tare(self):
         _log("批量坩埚称量开始, 共 " + str(len(self._valid_rows)) + " 个")
-        self.sig_status_msg.emit("正在关闭炉盖...")
         self._send_long_duration_cmd(CMD.CLOSE_LID, desc="关炉门")
         for row, name, mode in self._valid_rows:
             if not self._running:
@@ -116,8 +116,8 @@ class WeighWorker(QThread):
                 continue
             self._weigh_one_tare(row, name)
         _log("批量坩埚称量完成")
+        self.sig_status_msg.emit("正在上升样盘...")
         self._send_long_duration_cmd(CMD.SAMPLE_PLATE_UP, desc="样盘上升")
-        self.sig_status_msg.emit("正在打开炉盖...")
         self._send_long_duration_cmd(CMD.OPEN_LID, desc="开炉门")
         self._send_cmd(CMD.BEEPER_1S, desc="蜂鸣提示")
         self.sig_weigh_done.emit("tare")
@@ -125,7 +125,6 @@ class WeighWorker(QThread):
     # ===== 批量称样品 =====
     def _batch_sample(self):
         _log("批量样品称量开始, 共 " + str(len(self._valid_rows)) + " 个")
-        self.sig_status_msg.emit("正在关闭炉盖...")
         self._send_long_duration_cmd(CMD.CLOSE_LID, desc="关炉门")
         for row, name, mode in self._valid_rows:
             if not self._running:
@@ -134,8 +133,8 @@ class WeighWorker(QThread):
                 continue
             self._weigh_one_sample(row, name)
         _log("批量样品称量完成")
+        self.sig_status_msg.emit("正在上升样盘...")
         self._send_long_duration_cmd(CMD.SAMPLE_PLATE_UP, desc="样盘上升")
-        self.sig_status_msg.emit("正在打开炉盖...")
         self._send_long_duration_cmd(CMD.OPEN_LID, desc="开炉门")
         self._send_cmd(CMD.BEEPER_1S, desc="蜂鸣提示")
         self.sig_weigh_done.emit("sample")
@@ -143,6 +142,7 @@ class WeighWorker(QThread):
     # ===== 单个称样品 =====
     def _single_sample(self):
         _log("单个称量样品开始, 共 " + str(len(self._valid_rows)) + " 个")
+        self.sig_status_msg.emit("正在进入称重模式...")
         self._send_cmd(CMD.ENTER_WEIGH_MODE, desc="进入称量样重状态")
         self._sleep(CMD_INTERVAL_S)
         for row, name, mode in self._valid_rows:
@@ -200,6 +200,7 @@ class WeighWorker(QThread):
                                       total_weight=total_weight, tare_weight=tare_weight)
                 break
         _log("单个称量全部完成")
+        self.sig_status_msg.emit("正在上升样盘...")
         self._send_long_duration_cmd(CMD.SAMPLE_PLATE_UP, desc="样盘上升")
         self._send_cmd(CMD.EXIT_WEIGH_MODE, desc="解除称重状态")
         self.sig_weigh_done.emit("sample")
@@ -404,16 +405,27 @@ class WeighWorker(QThread):
     _MECHANICAL_CMDS = {CMD.SAMPLE_PLATE_UP, CMD.SAMPLE_PLATE_DOWN,
                         CMD.SAMPLE_PLATE_STEP, CMD.SAMPLE_PLATE_HOME,
                         CMD.CLOSE_LID, CMD.OPEN_LID}
+    _LID_CMDS = {CMD.CLOSE_LID, CMD.OPEN_LID}
 
     def _send_long_duration_cmd(self, func_code, desc="", timeout=15.0):
         """发送长耗时指令，通过上行帧温度变化判断动作完成
-        机械类指令固定延时 MECHANICAL_WAIT_S 秒，不检测温度"""
+        机械类指令固定延时：炉盖指令 LID_WAIT_S 秒，其他 MECHANICAL_WAIT_S 秒"""
         import time as _t
         self._send_cmd(func_code, desc)
-        # 机械类指令：固定 MECHANICAL_WAIT_S 等待
+        # 机械类指令：固定等待
         if func_code in self._MECHANICAL_CMDS:
-            self._sleep(MECHANICAL_WAIT_S)
-            _log("mechanical cmd done: " + desc)
+            if func_code in self._LID_CMDS:
+                # 炉盖指令：逐秒倒计时显示
+                wait_s = LID_WAIT_S
+                for remaining in range(int(wait_s), 0, -1):
+                    if not self._running:
+                        return
+                    self.sig_status_msg.emit(f"{desc}中... {remaining}s")
+                    self._sleep(1)
+            else:
+                wait_s = MECHANICAL_WAIT_S
+                self._sleep(wait_s)
+            _log("mechanical cmd done: " + desc + " (waited " + str(wait_s) + "s)")
             return
         # 热工类指令：通过温度变化检测完成
         _, last_temp = self._read_uplink_temp()
@@ -547,7 +559,7 @@ class WeighController(QObject):
     sig_confirm_weigh = Signal(int, str, float)
     sig_single_weigh_done = Signal(int, float)
     sig_weight_out_of_range = Signal(str, float, float, float)
-    sig_status_msg = Signal(str)
+    sig_status_msg = Signal(str)  # 使用 BlockingQueuedConnection 确保 UI 在串口指令前刷新
     sig_real_time_sample_weight = Signal(float)
 
     def __init__(self, parent=None):
@@ -621,7 +633,7 @@ class WeighController(QObject):
         self._worker.sig_confirm_weigh.connect(self.sig_confirm_weigh)
         self._worker.sig_single_weigh_done.connect(self.sig_single_weigh_done)
         self._worker.sig_weight_out_of_range.connect(self.sig_weight_out_of_range)
-        self._worker.sig_status_msg.connect(self.sig_status_msg)
+        self._worker.sig_status_msg.connect(self._on_status_msg, Qt.BlockingQueuedConnection)
         self._worker.sig_real_time_sample_weight.connect(self.sig_real_time_sample_weight)
         if phase == "tare":
             self._worker.run_tare(self._valid_rows)
@@ -642,6 +654,10 @@ class WeighController(QObject):
 
     def _on_worker_finished(self):
         _log("Worker线程结束")
+
+    def _on_status_msg(self, msg):
+        """从 Worker 线程 BlockingQueuedConnection 回调，确保 UI 在串口指令前更新"""
+        self.sig_status_msg.emit(msg)
 
     def _on_backfill(self, row, col, weight, phase, **extra):
         if self._table_ref is None:

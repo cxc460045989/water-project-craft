@@ -118,9 +118,10 @@ class DataQueryDialog(QDialog):
         main_layout.addLayout(bottom_layout)
 
     def _build_table(self, pl):
-        headers = ["序号", "打印", "样品名称", "测试日期", "模式",
+        headers = ["打印", "样品名称", "测试日期", "模式",
                     "坩埚重量(g)", "样品重量(g)", "检查性干燥重(g)",
-                    "干燥重量(g)", "水分(%)", "平均值(%)", "精密度(%)"]
+                    "干燥重量(g)", "水分(%)", "平均值(%)", "精密度(%)",
+                    "测试单位", "化验员"]
         self._table = QTableWidget()
         self._table.setColumnCount(len(headers))
         self._table.setHorizontalHeaderLabels(headers)
@@ -142,7 +143,7 @@ class DataQueryDialog(QDialog):
         self._table.setShowGrid(True)
         self._table.setWordWrap(False)
 
-        col_widths = [50, 50, 90, 85, 72, 108, 108, 130, 108, 80, 80, 80]
+        col_widths = [50, 90, 85, 72, 108, 108, 130, 108, 80, 80, 80, 80, 70]
         for i, w in enumerate(col_widths):
             self._table.setColumnWidth(i, w)
 
@@ -303,31 +304,30 @@ class DataQueryDialog(QDialog):
         c = Qt.AlignCenter
 
         for i, r in enumerate(rows):
-            seq = QTableWidgetItem(str(i + 1)); seq.setTextAlignment(c)
-            self._table.setItem(i, 0, seq)
-
             cb_w = QWidget()
             cb_lo = QHBoxLayout(cb_w); cb_lo.setContentsMargins(0, 0, 0, 0); cb_lo.setAlignment(Qt.AlignCenter)
             chk = QCheckBox(); chk.setChecked(True)
             cb_lo.addWidget(chk)
-            self._table.setCellWidget(i, 1, cb_w)
+            self._table.setCellWidget(i, 0, cb_w)
             self._checkboxes.append(chk)
 
             vals = [
-                r.get("name", ""),
-                r.get("test_date", ""),
-                r.get("mode", ""),
-                self._fmt(r.get("tare_weight"), 4),
-                self._fmt(r.get("sample_weight"), 4),
-                self._fmt(r.get("check_dry_weight"), 4),
-                self._fmt(r.get("dry_weight"), 4),
-                self._fmt(r.get("moisture"), 2),
-                self._fmt(r.get("avg_moisture"), 2),
-                self._fmt(r.get("precision_val"), 2),
+                r.get("样品名", ""),
+                r.get("试验日期", ""),
+                r.get("模式", ""),
+                self._fmt(r.get("器皿重"), 4),
+                self._fmt(r.get("样重"), 4),
+                self._fmt(r.get("检查性干燥重"), 4),
+                self._fmt(r.get("干燥后重"), 4),
+                self._fmt(r.get("水分"), 2),
+                self._fmt(r.get("平均水分"), 2),
+                self._fmt(r.get("精密度"), 2),
+                r.get("测试单位", ""),
+                r.get("化验员", ""),
             ]
             for j, v in enumerate(vals):
                 item = QTableWidgetItem(v); item.setTextAlignment(c)
-                self._table.setItem(i, j + 2, item)
+                self._table.setItem(i, j + 1, item)
 
         self._table.resizeRowsToContents()
 
@@ -388,9 +388,10 @@ class DataQueryDialog(QDialog):
         logger.info("[QUERY] 已删除 %d 条" % len(selected))
 
     def _on_export_excel(self):
-        """导出全部查询结果为 CSV (兼容 Excel)"""
-        if not self._all_rows:
-            QMessageBox.information(self, "提示", "请先执行查找")
+        """导出打印勾选行结果为 CSV (GBK编码，兼容中文Excel)"""
+        selected = self._get_selected_rows()
+        if not selected:
+            QMessageBox.information(self, "提示", "请先勾选要导出的数据行（打印列）")
             return
 
         path, _ = QFileDialog.getSaveFileName(
@@ -400,28 +401,30 @@ class DataQueryDialog(QDialog):
             return
 
         try:
-            with open(path, "w", encoding="utf-8-sig") as f:
-                headers = ["序号", "样品名称", "测试日期", "模式",
+            with open(path, "w", encoding="gbk") as f:
+                headers = ["样品名称", "测试日期", "模式",
                            "坩埚重量(g)", "样品重量(g)", "检查性干燥重(g)",
-                           "干燥重量(g)", "水分(%)", "平均值(%)", "精密度(%)"]
+                           "干燥重量(g)", "水分(%)", "平均值(%)", "精密度(%)",
+                           "测试单位", "化验员"]
                 f.write(",".join(headers) + "\n")
-                for i, r in enumerate(self._all_rows):
+                for i, r in enumerate(selected):
                     row = [
-                        str(i + 1),
-                        str(r.get("name", "")),
-                        str(r.get("test_date", "")),
-                        str(r.get("mode", "")),
-                        self._fmt(r.get("tare_weight"), 4),
-                        self._fmt(r.get("sample_weight"), 4),
-                        self._fmt(r.get("check_dry_weight"), 4),
-                        self._fmt(r.get("dry_weight"), 4),
-                        self._fmt(r.get("moisture"), 2),
-                        self._fmt(r.get("avg_moisture"), 2),
-                        self._fmt(r.get("precision_val"), 2),
+                        str(r.get("样品名", "")),
+                        str(r.get("试验日期", "")),
+                        str(r.get("模式", "")),
+                        self._fmt(r.get("器皿重"), 4),
+                        self._fmt(r.get("样重"), 4),
+                        self._fmt(r.get("检查性干燥重"), 4),
+                        self._fmt(r.get("干燥后重"), 4),
+                        self._fmt(r.get("水分"), 2),
+                        self._fmt(r.get("平均水分"), 2),
+                        self._fmt(r.get("精密度"), 2),
+                        str(r.get("测试单位", "")),
+                        str(r.get("化验员", "")),
                     ]
                     f.write(",".join(row) + "\n")
-            QMessageBox.information(self, "导出成功", "数据已导出到:\n" + path)
-            logger.info("[QUERY] Excel 导出成功: %s" % path)
+            QMessageBox.information(self, "导出成功", "已导出 %d 条数据到:\n%s" % (len(selected), path))
+            logger.info("[QUERY] Excel 导出成功: %s (%d条)" % (path, len(selected)))
         except Exception as e:
             QMessageBox.warning(self, "导出失败", str(e))
 
@@ -449,30 +452,22 @@ class DataQueryDialog(QDialog):
         from PySide2.QtGui import QTextDocument, QFont
         from datetime import datetime
 
-        # 从 params 读单位/化验员
-        unit = ""
-        tech = ""
-        try:
-            from db import load_params
-            p = load_params()
-            unit = p.get("unit", "")
-            hy = p.get("hy_current", "")
-            tech = hy if hy else ""
-        except Exception:
-            pass
+        # 从第一行数据取单位/化验员
+        unit = rows[0].get("测试单位", "") if rows else ""
+        tech = rows[0].get("化验员", "") if rows else ""
 
         rows_html = ""
         for r in rows:
             cells = [
-                r.get("name", ""),
-                r.get("mode", ""),
-                self._fmt(r.get("tare_weight"), 4),
-                self._fmt(r.get("sample_weight"), 4),
-                self._fmt(r.get("check_dry_weight"), 4),
-                self._fmt(r.get("dry_weight"), 4),
-                self._fmt(r.get("moisture"), 2),
-                self._fmt(r.get("avg_moisture"), 2),
-                self._fmt(r.get("precision_val"), 2),
+                r.get("样品名", ""),
+                r.get("模式", ""),
+                self._fmt(r.get("器皿重"), 4),
+                self._fmt(r.get("样重"), 4),
+                self._fmt(r.get("检查性干燥重"), 4),
+                self._fmt(r.get("干燥后重"), 4),
+                self._fmt(r.get("水分"), 2),
+                self._fmt(r.get("平均水分"), 2),
+                self._fmt(r.get("精密度"), 2),
             ]
             rows_html += "<tr>" + "".join("<td>%s</td>" % c for c in cells) + "</tr>"
 

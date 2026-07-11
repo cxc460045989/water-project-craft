@@ -100,25 +100,27 @@ def _init_db(conn):
 
         CREATE TABLE IF NOT EXISTS experiment_results (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            experiment_id INTEGER NOT NULL,
-            batch_no TEXT,
-            test_date TEXT,
-            sample_no TEXT,
-            name TEXT,
-            mode TEXT,
-            tare_weight REAL,
-            sample_weight REAL,
-            check_dry_weight REAL,
-            dry_weight REAL,
-            moisture REAL,
-            avg_moisture REAL,
-            precision_val REAL,
-            aw_temp REAL,
-            aw_time INTEGER,
-            tw_temp REAL,
-            tw_time INTEGER,
-            completed_at TEXT DEFAULT (datetime('now','localtime')),
-            FOREIGN KEY (experiment_id) REFERENCES experiments(id) ON DELETE CASCADE
+            实验ID INTEGER NOT NULL,
+            批次号 TEXT,
+            试验日期 TEXT,
+            样品编号 TEXT,
+            样品名 TEXT,
+            模式 TEXT,
+            器皿重 REAL,
+            样重 REAL,
+            检查性干燥重 REAL,
+            干燥后重 REAL,
+            水分 REAL,
+            平均水分 REAL,
+            精密度 REAL,
+            分析水温度 REAL,
+            分析水时间 INTEGER,
+            全水温度 REAL,
+            全水时间 INTEGER,
+            完成时间 TEXT DEFAULT (datetime('now','localtime')),
+            测试单位 TEXT,
+            化验员 TEXT,
+            FOREIGN KEY (实验ID) REFERENCES experiments(id) ON DELETE CASCADE
         );
 
         CREATE TABLE IF NOT EXISTS moisture_results (
@@ -422,24 +424,25 @@ def batch_set_mode(mode):
 
 # ========== 实验最终结果读写（仅完整完成流程后写入）==========
 
-def save_experiment_result(experiment_id, batch_no, test_date, sample_no,
-                           name, mode, tare_weight, sample_weight,
-                           check_dry_weight, dry_weight, moisture,
-                           avg_moisture, precision_val,
-                           aw_temp=None, aw_time=None, tw_temp=None, tw_time=None):
+def save_experiment_result(实验ID, 批次号, 试验日期, 样品编号,
+                           样品名, 模式, 器皿重, 样重,
+                           检查性干燥重, 干燥后重, 水分,
+                           平均水分, 精密度,
+                           分析水温度=None, 分析水时间=None, 全水温度=None, 全水时间=None,
+                           测试单位="", 化验员=""):
     """写入一条最终实验结果"""
     conn = get_conn()
     conn.execute("""
         INSERT INTO experiment_results
-            (experiment_id, batch_no, test_date, sample_no, name, mode,
-             tare_weight, sample_weight, check_dry_weight, dry_weight,
-             moisture, avg_moisture, precision_val,
-             aw_temp, aw_time, tw_temp, tw_time)
-        VALUES (?,?,?,?,?,?, ?,?,?,?, ?,?,?, ?,?,?,?)
-    """, (experiment_id, batch_no, test_date, sample_no, name, mode,
-          tare_weight, sample_weight, check_dry_weight, dry_weight,
-          moisture, avg_moisture, precision_val,
-          aw_temp, aw_time, tw_temp, tw_time))
+            (实验ID, 批次号, 试验日期, 样品编号, 样品名, 模式,
+             器皿重, 样重, 检查性干燥重, 干燥后重,
+             水分, 平均水分, 精密度,
+             分析水温度, 分析水时间, 全水温度, 全水时间, 测试单位, 化验员)
+        VALUES (?,?,?,?,?,?, ?,?,?,?, ?,?,?, ?,?,?,?, ?,?)
+    """, (实验ID, 批次号, 试验日期, 样品编号, 样品名, 模式,
+          器皿重, 样重, 检查性干燥重, 干燥后重,
+          水分, 平均水分, 精密度,
+          分析水温度, 分析水时间, 全水温度, 全水时间, 测试单位, 化验员))
     conn.commit()
     conn.close()
 
@@ -454,18 +457,19 @@ def save_experiment_results_batch(results_list):
     for r in results_list:
         conn.execute("""
             INSERT INTO experiment_results
-                (experiment_id, batch_no, test_date, sample_no, name, mode,
-                 tare_weight, sample_weight, check_dry_weight, dry_weight,
-                 moisture, avg_moisture, precision_val,
-                 aw_temp, aw_time, tw_temp, tw_time)
-            VALUES (?,?,?,?,?,?, ?,?,?,?, ?,?,?, ?,?,?,?)
+                (实验ID, 批次号, 试验日期, 样品编号, 样品名, 模式,
+                 器皿重, 样重, 检查性干燥重, 干燥后重,
+                 水分, 平均水分, 精密度,
+                 分析水温度, 分析水时间, 全水温度, 全水时间, 测试单位, 化验员)
+            VALUES (?,?,?,?,?,?, ?,?,?,?, ?,?,?, ?,?,?,?, ?,?)
         """, (
-            r.get("experiment_id"), r.get("batch_no"), r.get("test_date"),
-            r.get("sample_no"), r.get("name"), r.get("mode"),
-            r.get("tare_weight"), r.get("sample_weight"),
-            r.get("check_dry_weight"), r.get("dry_weight"),
-            r.get("moisture"), r.get("avg_moisture"), r.get("precision_val"),
-            r.get("aw_temp"), r.get("aw_time"), r.get("tw_temp"), r.get("tw_time"),
+            r.get("实验ID"), r.get("批次号"), r.get("试验日期"),
+            r.get("样品编号"), r.get("样品名"), r.get("模式"),
+            r.get("器皿重"), r.get("样重"),
+            r.get("检查性干燥重"), r.get("干燥后重"),
+            r.get("水分"), r.get("平均水分"), r.get("精密度"),
+            r.get("分析水温度"), r.get("分析水时间"), r.get("全水温度"), r.get("全水时间"),
+            r.get("测试单位"), r.get("化验员"),
         ))
     conn.commit()
     conn.close()
@@ -485,13 +489,13 @@ def query_experiment_results(start_date=None, end_date=None,
     sql = "SELECT * FROM experiment_results WHERE 1=1"
     params = []
     if start_date:
-        sql += " AND test_date >= ?"
+        sql += ' AND "试验日期" >= ?'
         params.append(start_date)
     if end_date:
-        sql += " AND test_date <= ?"
+        sql += ' AND "试验日期" <= ?'
         params.append(end_date)
     if name_filter:
-        sql += " AND name LIKE ?"
+        sql += ' AND "样品名" LIKE ?'
         params.append("%" + name_filter + "%")
     sql += " ORDER BY id DESC LIMIT ?"
     params.append(limit)
