@@ -479,8 +479,8 @@ class WeighController(QObject):
         self.sig_status_msg.emit("准备称量器皿，正在初始化...")
         self._start_worker("tare")
 
-    def start_open_lid(self):
-        _log("start_open_lid")
+    def show_add_sample_prompt(self):
+        _log("show_add_sample_prompt")
         self.sig_add_sample_prompt.emit()
 
     def start_sample_weigh(self):

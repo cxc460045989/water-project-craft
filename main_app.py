@@ -738,73 +738,6 @@ class MoistureAnalyzer(QMainWindow):
 
     # ---- table data real-time persistence ----
 
-    # ---- 重新称量回退入口 ----
-    def _on_reweigh_flow(self):
-        """【重新称量流程跳转入口】触发整套批量称重流程重跑"""
-        from weigh_dialog import WeighDialog
-        from weigh_controller import WeighController
-        from PySide2.QtWidgets import QMessageBox
-
-        valid_rows = []
-        for r in range(1, self._table.rowCount()):
-            item = self._table.item(r, 0)
-            if item and item.text().strip():
-                valid_rows.append(r)
-
-        if not valid_rows:
-            return
-
-        dlg = WeighDialog(self)
-        dlg.enable_cancel(True)
-        ctrl = WeighController(self)
-        ctrl.set_table(self._table)
-
-        def on_weigh_progress(info):
-            if info["phase"] == "tare":
-                dlg.show_weighing(info["row"], info["name"], info["weight"])
-            else:
-                dlg.show_weighing_sample(info["row"], info["name"], info["weight"])
-
-        def on_weigh_done(phase):
-            if phase == "tare":
-                ctrl.start_open_lid()
-            elif phase == "sample":
-                from PySide2.QtCore import QTimer
-                from weight_check_dialog import WeightCheckDialog
-                from db import load_params
-
-                sample_list = []
-                for r in range(1, self._table.rowCount()):
-                    name_item = self._table.item(r, 0)
-                    if name_item and name_item.text().strip():
-                        name = name_item.text().strip()
-                        weight_item = self._table.item(r, 3)
-                        weight = float(weight_item.text()) if weight_item and weight_item.text() else 0.0
-                        mode_item = self._table.item(r, 1)
-                        mode = mode_item.text().strip() if mode_item and mode_item.text() else "分析水"
-                        sample_list.append({"row": r, "name": name, "weight": weight, "mode": mode})
-                if sample_list:
-                    params = load_params()
-                    check_dlg = WeightCheckDialog(self)
-                    check_dlg.load_sample_data(sample_list, params)
-                    check_dlg.reweigh_clicked.connect(self._on_reweigh_flow)
-                    check_dlg.exec_()
-                dlg.accept()
-
-        def on_add_sample_prompt():
-            dlg.show_add_sample_prompt()
-
-        ctrl.sig_weighing_progress.connect(on_weigh_progress)
-        ctrl.sig_weighing_done.connect(on_weigh_done)
-        ctrl.sig_add_sample_prompt.connect(on_add_sample_prompt)
-        ctrl.sig_status_msg.connect(dlg.show_status)
-
-        dlg.start_sample_clicked.connect(ctrl.start_sample_weigh)
-
-        ctrl.start_tare_weigh(valid_rows)
-        dlg.exec_()
-        ctrl.stop()
-
     def _on_cell_changed(self, row, col):
         import datetime
         _ts = lambda: datetime.datetime.now().strftime("%H:%M:%S.%f")[:-3]
@@ -878,7 +811,7 @@ class MoistureAnalyzer(QMainWindow):
 
         def on_weigh_done(phase):
             if phase == "tare":
-                ctrl.start_open_lid()
+                ctrl.show_add_sample_prompt()
             elif phase == "sample":
                 sample_list = []
                 for r in range(1, self._table.rowCount()):
@@ -1184,12 +1117,27 @@ class MoistureAnalyzer(QMainWindow):
             return
 
         if name == "打印数据":
-            from print_report import print_export_prompt
-            from db import load_params
-            p = load_params()
-            unit = p.get("unit", "")
-            tech = self.hy_combo.currentText() if hasattr(self, "hy_combo") else ""
-            print_export_prompt(self, self._table, unit=unit, tech=tech, reviewer="")
+            try:
+                from print_report import print_export_prompt, _collect_table_data
+                from db import load_params
+                logger.debug("[PRINT] 打印数据按钮被点击")
+                p = load_params()
+                unit = p.get("unit", "")
+                tech = self.hy_combo.currentText() if hasattr(self, "hy_combo") else ""
+                # 先检查是否有数据
+                data = _collect_table_data(self._table) if self._table else []
+                logger.debug("[PRINT] 收集到 {} 条样品数据".format(len(data)))
+                if not data:
+                    from PySide2.QtWidgets import QMessageBox
+                    QMessageBox.information(self, "提示", "当前表格中没有样品数据，请先输入样品名称。")
+                    return
+                print_export_prompt(self, self._table, unit=unit, tech=tech, reviewer="")
+            except Exception as e:
+                logger.error("[PRINT] 打印异常: " + str(e))
+                import traceback
+                logger.error(traceback.format_exc())
+                from PySide2.QtWidgets import QMessageBox
+                QMessageBox.warning(self, "打印错误", f"打印/导出时发生错误：\n{str(e)}")
         elif name == "硬件检测":
             from hardware_check_dialog import HardwareCheckDialog
             dlg = HardwareCheckDialog(self, serial_mgr=self.serial_mgr)
@@ -1235,7 +1183,7 @@ class MoistureAnalyzer(QMainWindow):
 
                 def on_weigh_done_single(phase):
                     if phase == "tare":
-                        ctrl.start_open_lid()
+                        ctrl.show_add_sample_prompt()
                     elif phase == "sample":
                         from weight_check_dialog import WeightCheckDialog
                         from db import create_experiment, save_experiment_samples
@@ -1291,7 +1239,7 @@ class MoistureAnalyzer(QMainWindow):
                 ctrl.sig_weight_out_of_range.connect(on_weight_out_of_range)
 
                 dlg.confirm_weigh_clicked.connect(ctrl.confirm_current_weigh)
-                dlg.start_sample_clicked.connect(ctrl.start_sample_weigh)
+                dlg.start_sample_clicked.connect(lambda: ctrl.start_single_sample_weigh(valid_rows))
 
                 ctrl.start_tare_weigh(valid_rows)
                 dlg.exec_()
@@ -1323,7 +1271,7 @@ class MoistureAnalyzer(QMainWindow):
 
             def on_weigh_done(phase):
                 if phase == "tare":
-                    ctrl.start_open_lid()
+                    ctrl.show_add_sample_prompt()
                 elif phase == "sample":
                     from weight_check_dialog import WeightCheckDialog
                     from db import create_experiment, save_experiment_samples
