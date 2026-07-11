@@ -153,6 +153,7 @@ class WeighWorker(QThread):
             position = row
             _log("单个称量 row=" + str(row) + " name=" + name + " pos=" + str(position))
             while self._running:
+                self.sig_status_msg.emit("正在称量" + str(row) + "号样品: " + name)
                 self._send_move_to(position)
                 self._sleep(CMD_INTERVAL_S)
                 if not self._do_handshake_with_retry():
@@ -263,6 +264,7 @@ class WeighWorker(QThread):
     def _weigh_one_tare(self, row, name):
         position = row
         _log("坩埚称量 row=" + str(row) + " name=" + name + " pos=" + str(position))
+        self.sig_status_msg.emit("正在称量" + str(row) + "号器皿")
         self._send_move_to(position)
         self._sleep(CMD_INTERVAL_S)
         if not self._do_handshake_with_retry():
@@ -293,6 +295,7 @@ class WeighWorker(QThread):
     def _weigh_one_sample(self, row, name):
         position = row
         _log("样品称量 row=" + str(row) + " name=" + name + " pos=" + str(position))
+        self.sig_status_msg.emit("正在称量" + str(row) + "号样品: " + name)
         self._send_move_to(position)
         self._sleep(CMD_INTERVAL_S)
         if not self._do_handshake_with_retry():
@@ -334,6 +337,10 @@ class WeighWorker(QThread):
         超时后通过 sig_error 通知 UI 弹出提示框"""
         from protocol_layer import CommandBuilder, UplinkBuffer
         import time as _t
+
+        if not self._running:
+            _log("握手取消: 流程已终止")
+            return False
 
         deadline = _t.time() + 60.0
         attempt = 0
@@ -383,6 +390,10 @@ class WeighWorker(QThread):
                  if remaining > 0 else "握手未成功 (第" + str(attempt) + "次), 已超时")
             if remaining > 0.5:
                 self._sleep(0.5)
+
+        if not self._running:
+            _log("握手取消: 流程已终止 (共尝试" + str(attempt) + "次)")
+            return False
 
         _log("握手超时(60s), 共尝试" + str(attempt) + "次, 设备无响应")
         self.sig_error.emit("设备握手超时(1分钟无响应)，请检查:\n"
