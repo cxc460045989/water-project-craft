@@ -91,7 +91,7 @@ def _patch_for_mock_and_debug(mod):
             hex_str = " ".join(f"{b:02X}" for b in data[:80])
             if len(data) > 80:
                 hex_str += "..."
-            has_ok = b"OK" in data
+            has_ok = b'\x4F\x4B\x01\x45\x4E\x44' in data
             print(TAG + _ts() + " 读取全部 -> %d字节 %s %s" % (
                 len(data), "含OK" if has_ok else "", hex_str))
         return data

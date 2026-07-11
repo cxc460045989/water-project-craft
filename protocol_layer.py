@@ -47,7 +47,7 @@ class CMD:
     SAMPLE_PLATE_HOME = 0x30  # 样盘移动到1号位
     GAS_ALL_OFF = 0x32        # 关闭鼓风、氮气、氧气
     MOISTURE_TEST_1 = 0x33    # 水分开始测试（开鼓风）
-    MOISTURE_TEST_2 = 0x34    # 水分开始测试（开鼓风）
+    MOISTURE_TEST_2 = 0x34    # 水分开始测试（开氮气）
     O2_ON = 0x0E              # 开氧气
     O2_OFF = 0x0F             # 关氧气
 
@@ -241,7 +241,7 @@ def handshake(serial_mgr, retries=3, wait_ms=80, last_uplink_time=None, timeout=
         2. 清空串口接收缓冲区
         3. 发送 5A 4D 01 44
         4. 等待 wait_ms 毫秒
-        5. 读取回复，判断是否为 "OK"
+        5. 读取回复，判断是否为 4F 4B 01 45 4E 44 握手响应帧
         6. 失败重试，最多 retries 次
         7. 若 last_uplink_time 正常（上行帧持续到来）但握手始终无响应，
            判定为设备忙而非链路断开
@@ -289,7 +289,8 @@ def handshake(serial_mgr, retries=3, wait_ms=80, last_uplink_time=None, timeout=
         except Exception:
             resp = b""
 
-        if resp and b"OK" in resp:
+        # 新协议：握手成功响应帧为 4F 4B 01 45 4E 44
+        if resp and b'\x4F\x4B\x01\x45\x4E\x44' in resp:
             return True
 
         # 若 last_uplink_time 有效且上行帧仍在到来，判定为设备忙，不递减重试次数

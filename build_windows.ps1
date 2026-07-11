@@ -55,8 +55,7 @@ pyinstaller --clean --noconfirm main_app.spec
 
 # 6. 删除无用 DLL（缩小体积、加快启动）
 Write-Host "[6/6] 清理无用 DLL..." -ForegroundColor Yellow
- = "dist/main_app/_internal/PySide2"
- = @(
+$dllNames = @(
     "opengl32sw.dll",
     "Qt5Pdf.dll", "Qt5Qml.dll", "Qt5QmlModels.dll",
     "Qt5Quick.dll", "Qt5VirtualKeyboard.dll",
@@ -64,28 +63,22 @@ Write-Host "[6/6] 清理无用 DLL..." -ForegroundColor Yellow
     "Qt5DBus.dll", "Qt5Svg.dll",
     "d3dcompiler_47.dll"
 )
-foreach ( in ) {
-     = Join-Path  
-    if (Test-Path ) { Remove-Item  -Force; Write-Host "  删除: " }
+$outputDirs = @("dist/水分测定仪/_internal/PySide2", "dist/水分测定仪_debug/_internal/PySide2")
+foreach ($dir in $outputDirs) {
+    if (Test-Path $dir) {
+        foreach ($dll in $dllNames) {
+            $dllPath = Join-Path $dir $dll
+            if (Test-Path $dllPath) { Remove-Item $dllPath -Force; Write-Host "  删除: $dllPath" }
+        }
+    }
 }
 Write-Host "  清理完成"
 
-
-# 重命名输出目录
-if (Test-Path "dist/main_app") {
-    if (Test-Path "dist/微机全自动水分测定仪") {
-        # 保留旧版 data.db，重命名旧目录为备份
-        Rename-Item "dist/微机全自动水分测定仪" "微机全自动水分测定仪_old" -ErrorAction SilentlyContinue
-    }
-    Rename-Item "dist/main_app" "微机全自动水分测定仪"
-    Write-Host "  输出目录: dist/微机全自动水分测定仪/" -ForegroundColor Green
-}
-
 Write-Host ""
 Write-Host "================== 打包成功！==================" -ForegroundColor Green
-Write-Host "  输出目录: dist/微机全自动水分测定仪/" -ForegroundColor Green
-Write-Host "  程序路径: dist/微机全自动水分测定仪/main_app.exe" -ForegroundColor Green
+Write-Host "  Release: dist/水分测定仪.exe + dist/水分测定仪/" -ForegroundColor Green
+Write-Host "  Debug:   dist/水分测定仪_debug.exe + dist/水分测定仪_debug/" -ForegroundColor Green
 Write-Host "================================================" -ForegroundColor Green
 Write-Host ""
-Write-Host "直接运行: .\dist\微机全自动水分测定仪\main_app.exe" -ForegroundColor Yellow
+Write-Host "直接运行: .\dist\水分测定仪.exe" -ForegroundColor Yellow
 Write-Host ""

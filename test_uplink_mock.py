@@ -26,7 +26,7 @@ def main():
 
     def on_connected():
         print("[MOCK] 串口已连接")
-        mgr._serial.add_response(CommandBuilder.build_command(CMD.HANDSHAKE), b"OK")
+        mgr._serial.add_response(CommandBuilder.build_command(CMD.HANDSHAKE), b'\x4F\x4B\x01\x45\x4E\x44')
         mgr._serial.set_uplink_frame(**scenario_to_kw(scenarios[0]))
         QTimer.singleShot(500, tick)
 

@@ -108,7 +108,7 @@ class WeighWorker(QThread):
     # ===== 批量称坩埚 =====
     def _batch_tare(self):
         _log("批量坩埚称量开始, 共 " + str(len(self._valid_rows)) + " 个")
-        self._send_long_duration_cmd(CMD.CLOSE_LID, desc="关炉门")
+        self._send_long_duration_cmd(CMD.CLOSE_LID, desc="正在关闭炉盖")
         for row, name, mode in self._valid_rows:
             if not self._running:
                 return
@@ -118,14 +118,14 @@ class WeighWorker(QThread):
         _log("批量坩埚称量完成")
         self.sig_status_msg.emit("正在上升样盘...")
         self._send_long_duration_cmd(CMD.SAMPLE_PLATE_UP, desc="样盘上升")
-        self._send_long_duration_cmd(CMD.OPEN_LID, desc="开炉门")
+        self._send_long_duration_cmd(CMD.OPEN_LID, desc="正在打开炉盖")
         self._send_cmd(CMD.BEEPER_1S, desc="蜂鸣提示")
         self.sig_weigh_done.emit("tare")
 
     # ===== 批量称样品 =====
     def _batch_sample(self):
         _log("批量样品称量开始, 共 " + str(len(self._valid_rows)) + " 个")
-        self._send_long_duration_cmd(CMD.CLOSE_LID, desc="关炉门")
+        self._send_long_duration_cmd(CMD.CLOSE_LID, desc="正在关闭炉盖")
         for row, name, mode in self._valid_rows:
             if not self._running:
                 return
@@ -135,7 +135,7 @@ class WeighWorker(QThread):
         _log("批量样品称量完成")
         self.sig_status_msg.emit("正在上升样盘...")
         self._send_long_duration_cmd(CMD.SAMPLE_PLATE_UP, desc="样盘上升")
-        self._send_long_duration_cmd(CMD.OPEN_LID, desc="开炉门")
+        self._send_long_duration_cmd(CMD.OPEN_LID, desc="正在打开炉盖")
         self._send_cmd(CMD.BEEPER_1S, desc="蜂鸣提示")
         self.sig_weigh_done.emit("sample")
 
@@ -374,7 +374,7 @@ class WeighWorker(QThread):
                     resp = self._serial.read_all()
                 except Exception:
                     resp = b""
-                if resp and b"OK" in resp:
+                if resp and b'\x4F\x4B\x01\x45\x4E\x44' in resp:
                     _log("握手成功 (第" + str(attempt) + "次尝试)")
                     return True
 
@@ -420,7 +420,7 @@ class WeighWorker(QThread):
                 for remaining in range(int(wait_s), 0, -1):
                     if not self._running:
                         return
-                    self.sig_status_msg.emit(f"{desc}中... {remaining}s")
+                    self.sig_status_msg.emit(f"{desc}... {remaining}s")
                     self._sleep(1)
             else:
                 wait_s = MECHANICAL_WAIT_S

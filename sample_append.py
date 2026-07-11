@@ -299,7 +299,7 @@ class SampleAppendWorker(QObject):
         self._serial.send(cmd)
         time.sleep(0.08)
         resp = self._serial.read_all()
-        if resp and b"OK" in resp:
+        if resp and b'\x4F\x4B\x01\x45\x4E\x44' in resp:
             _log("[握手] OK, 继续下一步")
             self._step_timer.stop()
             target = getattr(self, "_step_timer_target", None)

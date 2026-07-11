@@ -102,10 +102,10 @@ class MockInstrumentSimulator:
         if not data:
             return b""
 
-        # 握手
+        # 握手 — 新协议返回完整响应帧 4F 4B 01 45 4E 44
         if self._is_handshake(data):
-            self._resp_buf.extend(b"OK")
-            return b"OK"  # 返回给 call site 做 read_all() 合并
+            self._resp_buf.extend(b'\x4F\x4B\x01\x45\x4E\x44')
+            return b'\x4F\x4B\x01\x45\x4E\x44'
 
         # 固定4字节指令
         if len(data) >= 4 and data[0] == 0x5A and data[-1] == 0x44:
@@ -129,7 +129,7 @@ class MockInstrumentSimulator:
 
         fc = data[2]
         if fc == CMD.HANDSHAKE:
-            return b"OK"
+            return b'\x4F\x4B\x01\x45\x4E\x44'
         elif fc == CMD.BEEPER_1S:
             self._beeper_on = True
             threading.Timer(1.0, lambda: setattr(self, '_beeper_on', False)).start()
@@ -260,7 +260,7 @@ class SimSerialAdapter:
         # 握手指令走专用通道, 确保 read_all 一定能读到 OK
         if self._sim._is_handshake(data):
             resp = self._sim.feed_cmd(data)
-            self._handshake_resp.extend(b"OK")
+            self._handshake_resp.extend(b'\x4F\x4B\x01\x45\x4E\x44')
             return n
         # 其他指令交给模拟器处理
         resp = self._sim.feed_cmd(data)

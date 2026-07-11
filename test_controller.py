@@ -553,7 +553,8 @@ class TestWorker(QObject):
         self._serial.send(CommandBuilder.build_command(CMD.HANDSHAKE))
         time.sleep(0.08)
         resp = self._serial.read_all()
-        if resp and b"OK" in resp:
+        HANDSHAKE_RESP = b'\x4F\x4B\x01\x45\x4E\x44'
+        if resp and HANDSHAKE_RESP in resp:
             return True
 
         for attempt in range(HANDSHAKE_RETRIES * 3):
@@ -568,7 +569,7 @@ class TestWorker(QObject):
             self._serial.send(CommandBuilder.build_command(CMD.HANDSHAKE))
             time.sleep(0.08)
             resp = self._serial.read_all()
-            if resp and b"OK" in resp:
+            if resp and HANDSHAKE_RESP in resp:
                 return True
             _log("握手失败, 重试第 %d 次..." % (attempt + 1))
         return False

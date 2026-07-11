@@ -132,7 +132,7 @@ class InstrumentSimulator(QObject):
             if self._handshake_busy_remaining > 0:
                 self._handshake_busy_remaining -= 1
                 return b""  # 模拟设备忙, 无响应
-            return b"OK"
+            return b'\x4F\x4B\x01\x45\x4E\x44'
 
         # 处理其他指令
         cmd_name = self._identify_cmd(data)

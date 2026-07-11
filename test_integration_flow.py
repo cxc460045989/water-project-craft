@@ -115,13 +115,13 @@ check("port_name 返回MOCK", mgr.port_name == "MOCK")
 # MockSerial: 注册响应 (CMD_HANDSHAKE = 0x01)
 handshake_cmd = bytes([0x5A, 0x4D, 0x01, 0x44])
 if hasattr(mgr._serial, "add_response"):
-    mgr._serial.add_response(handshake_cmd, b"OK")
+    mgr._serial.add_response(handshake_cmd, b"OKEND")
 
 n = mgr.send(handshake_cmd)
 check("send() 返回发送字节数 " + str(n), n > 0)
 time.sleep(0.05)
 resp = mgr.read_all()
-check("Mock 回复握手OK", b"OK" in resp)
+check("Mock 回复握手OK", b"OKEND" in resp)
 
 # 模拟上行帧
 test_frame = b"S0850301001701END"
@@ -291,7 +291,7 @@ mgr2.open(port="MOCK")
 if hasattr(mgr2._serial, "add_response"):
     # 清之前的注册
     mgr2._serial._responses.clear()
-    mgr2._serial.add_response(bytes([0x5A, 0x4D, 0x01, 0x44]), b"OK")
+    mgr2._serial.add_response(bytes([0x5A, 0x4D, 0x01, 0x44]), b"OKEND")
 
 # 正常握手
 ok = handshake(mgr2)
@@ -344,7 +344,7 @@ mock = mgr4._serial
 
 # 注册握手
 mock._responses.clear()
-mock.add_response(bytes([0x5A, 0x4D, 0x01, 0x44]), b"OK")
+mock.add_response(bytes([0x5A, 0x4D, 0x01, 0x44]), b"OKEND")
 # 设置上行帧模拟
 mock.set_uplink_frame(temperature=105.0, weight=25.0235, online=1, btn=0)
 
@@ -353,7 +353,7 @@ mgr4.flush_input()
 mgr4.send(bytes([0x5A, 0x4D, 0x01, 0x44]))
 time.sleep(0.1)
 resp = mgr4.read_all()
-check("Mock回复握手OK", b"OK" in resp)
+check("Mock回复握手OK", b"OKEND" in resp)
 
 # 发送移动指令
 mgr4.flush_input()
@@ -448,7 +448,7 @@ mgr6 = SerialManager(parent=None, use_mock=True)
 mgr6.open(port="MOCK_APPEND")
 mock6 = mgr6._serial
 mock6._responses.clear()
-mock6.add_response(bytes([0x5A, 0x4D, 0x01, 0x44]), b"OK")
+mock6.add_response(bytes([0x5A, 0x4D, 0x01, 0x44]), b"OKEND")
 mock6.set_uplink_frame(temperature=25.0, weight=0.0, online=1, btn=0)
 
 worker_append = SampleAppendWorker(mgr6)
@@ -512,7 +512,7 @@ mgr_e2e = SerialManager(parent=None, use_mock=True)
 mgr_e2e.open(port="E2E")
 mock_e2e = mgr_e2e._serial
 mock_e2e._responses.clear()
-mock_e2e.add_response(bytes([0x5A, 0x4D, 0x01, 0x44]), b"OK")
+mock_e2e.add_response(bytes([0x5A, 0x4D, 0x01, 0x44]), b"OKEND")
 # 设置持续上行帧
 mock_e2e.set_uplink_frame(temperature=25.0, weight=0.0, online=1, btn=0)
 
@@ -548,7 +548,7 @@ mgr_e2e2 = SerialManager(parent=None, use_mock=True)
 mgr_e2e2.open(port="E2E2")
 mock2 = mgr_e2e2._serial
 mock2._responses.clear()
-mock2.add_response(bytes([0x5A, 0x4D, 0x01, 0x44]), b"OK")
+mock2.add_response(bytes([0x5A, 0x4D, 0x01, 0x44]), b"OKEND")
 mock2.set_uplink_frame(temperature=25.0, weight=25.0, online=1, btn=0)
 
 wa = SampleAppendWorker(mgr_e2e2)
