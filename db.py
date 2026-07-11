@@ -103,7 +103,7 @@ def _init_db(conn):
             实验ID INTEGER NOT NULL,
             批次号 TEXT,
             试验日期 TEXT,
-            样品编号 TEXT,
+            器皿位号 TEXT,
             样品名 TEXT,
             模式 TEXT,
             器皿重 REAL,
@@ -424,7 +424,7 @@ def batch_set_mode(mode):
 
 # ========== 实验最终结果读写（仅完整完成流程后写入）==========
 
-def save_experiment_result(实验ID, 批次号, 试验日期, 样品编号,
+def save_experiment_result(实验ID, 批次号, 试验日期, 器皿位号,
                            样品名, 模式, 器皿重, 样重,
                            检查性干燥重, 干燥后重, 水分,
                            平均水分, 精密度,
@@ -434,12 +434,12 @@ def save_experiment_result(实验ID, 批次号, 试验日期, 样品编号,
     conn = get_conn()
     conn.execute("""
         INSERT INTO experiment_results
-            (实验ID, 批次号, 试验日期, 样品编号, 样品名, 模式,
+            (实验ID, 批次号, 试验日期, 器皿位号, 样品名, 模式,
              器皿重, 样重, 检查性干燥重, 干燥后重,
              水分, 平均水分, 精密度,
              分析水温度, 分析水时间, 全水温度, 全水时间, 测试单位, 化验员)
         VALUES (?,?,?,?,?,?, ?,?,?,?, ?,?,?, ?,?,?,?, ?,?)
-    """, (实验ID, 批次号, 试验日期, 样品编号, 样品名, 模式,
+    """, (实验ID, 批次号, 试验日期, 器皿位号, 样品名, 模式,
           器皿重, 样重, 检查性干燥重, 干燥后重,
           水分, 平均水分, 精密度,
           分析水温度, 分析水时间, 全水温度, 全水时间, 测试单位, 化验员))
@@ -457,14 +457,14 @@ def save_experiment_results_batch(results_list):
     for r in results_list:
         conn.execute("""
             INSERT INTO experiment_results
-                (实验ID, 批次号, 试验日期, 样品编号, 样品名, 模式,
+                (实验ID, 批次号, 试验日期, 器皿位号, 样品名, 模式,
                  器皿重, 样重, 检查性干燥重, 干燥后重,
                  水分, 平均水分, 精密度,
                  分析水温度, 分析水时间, 全水温度, 全水时间, 测试单位, 化验员)
             VALUES (?,?,?,?,?,?, ?,?,?,?, ?,?,?, ?,?,?,?, ?,?)
         """, (
             r.get("实验ID"), r.get("批次号"), r.get("试验日期"),
-            r.get("样品编号"), r.get("样品名"), r.get("模式"),
+            r.get("器皿位号"), r.get("样品名"), r.get("模式"),
             r.get("器皿重"), r.get("样重"),
             r.get("检查性干燥重"), r.get("干燥后重"),
             r.get("水分"), r.get("平均水分"), r.get("精密度"),

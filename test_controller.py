@@ -221,8 +221,44 @@ class TestWorker(QObject):
 
     # ========= 步骤7: 最终结果计算与存储 =========
 
+    @staticmethod
+    def _bankers_round(value, decimals):
+        """银行舍入法(四舍六入五成双) — 使用 Decimal 避免浮点精度问题"""
+        from decimal import Decimal, ROUND_HALF_EVEN
+        d = Decimal(str(value))
+        quantize = Decimal('0.' + '0' * decimals)
+        return float(d.quantize(quantize, rounding=ROUND_HALF_EVEN))
+
+    def _calc_moisture(self, sample_weight, dry_weight, check_dry_weight):
+        """水分计算: 取检查性干燥重与干燥后重中较小值作为 m1
+        公式: 水分% = (m - m1) / m * 100
+        参数全部来自原始数据(experiment_samples)
+        """
+        from decimal import Decimal
+        m = Decimal(str(sample_weight))
+        # 取较小的作为 m1; 无检查性干燥重时用干燥后重
+        cd = Decimal(str(check_dry_weight)) if check_dry_weight is not None else None
+        dd = Decimal(str(dry_weight)) if dry_weight is not None else Decimal('0')
+        if cd is not None:
+            m1 = cd if cd < dd else dd
+        else:
+            m1 = dd
+        if m == 0:
+            return 0.0, float(m1)
+        moisture = float((m - m1) / m * Decimal('100'))
+        return moisture, float(m1)
+
     def _finalize_experiment(self):
-        """测试完成收尾: 计算水分→写 experiment_results→开炉门"""
+        """测试完成收尾: 计算水分(银行舍入+校正+反算)→写 experiment_results→开炉门
+
+        水分公式:
+          样品重量记作 m
+          取 min(检查性干燥重, 干燥后重) 记作 m1
+          水分 = (m - m1) / m * 100
+          全水保留1位小数, 分析水保留2位小数
+          结果校正: 水分 - 校正值(%), 反算干燥重填入结果表
+          原始数据(experiment_samples)不改变
+        """
         try:
             from db import (ensure_experiment, load_experiment_samples,
                            update_experiment_status, save_experiment_results_batch,
@@ -242,10 +278,6 @@ class TestWorker(QObject):
                 return
 
             results = []
-            aw_temp = params.get("aw_temp", 105)
-            aw_time = params.get("aw_time", 60)
-            tw_temp = params.get("tw_temp", 105)
-            tw_time = params.get("tw_time", 60)
             单位 = (exp_record or {}).get("unit", "") or params.get("unit", "")
             化验员 = (exp_record or {}).get("tech", "") or params.get("hy_current", "")
 
@@ -260,37 +292,68 @@ class TestWorker(QObject):
                 if not mode_samples:
                     continue
 
+                # 确定该模式的小数位和校正值
+                decimals = 2 if mode == "分析水" else 1  # 全水1位, 分析水2位
+                corr = float(params.get("aw_corr", 0) if mode == "分析水" else params.get("tw_corr", 0))
+                temp_val = params.get("aw_temp", 105) if mode == "分析水" else params.get("tw_temp", 105)
+                time_val = params.get("aw_time", 60) if mode == "分析水" else params.get("tw_time", 60)
+
                 moistures = []
                 for s in mode_samples:
-                    m = round(
-                        (s["sample_weight"] - s["dry_weight"])
-                        / s["sample_weight"] * 100, 2
-                    )
-                    moistures.append(m)
-                    s["_moisture"] = m
+                    sample_w = s["sample_weight"]
+                    dry_w = s["dry_weight"]
+                    check_w = s.get("check_dry_weight")
 
-                avg_m = round(sum(moistures) / len(moistures), 2)
-                prec = round(max(moistures) - min(moistures), 2) if len(moistures) >= 2 else 0.0
+                    # 1. 用原始数据计算水分
+                    moisture_raw, m1 = self._calc_moisture(sample_w, dry_w, check_w)
+
+                    # 2. 银行舍入
+                    moisture = self._bankers_round(moisture_raw, decimals)
+
+                    # 3. 应用校正值
+                    moisture_corrected = self._bankers_round(moisture - corr, decimals)
+
+                    # 4. 反算干燥重(用于结果显示, 原始数据不改变)
+                    from decimal import Decimal
+                    m = Decimal(str(sample_w))
+                    display_dry = float(m * (Decimal('1') - Decimal(str(moisture_corrected)) / Decimal('100')))
+                    display_dry = self._bankers_round(display_dry, 4)
+
+                    moistures.append(moisture_corrected)
+                    s["_moisture"] = moisture_corrected
+                    s["_m1"] = m1
+                    s["_display_dry"] = display_dry
+
+                    _log("水分计算 row=%s mode=%s m=%.4f m1=%.4f moisture=%.4f→校正%.*f%%"
+                         % (s.get("row_idx", "?"), mode, sample_w, m1,
+                            moisture_raw, decimals, moisture_corrected))
+
+                # 平均水分和精密度(均用校正后值银行舍入)
+                avg_m = self._bankers_round(sum(moistures) / len(moistures), decimals)
+                if len(moistures) >= 2:
+                    prec = self._bankers_round(max(moistures) - min(moistures), decimals)
+                else:
+                    prec = 0.0
 
                 for s in mode_samples:
                     results.append({
                         "实验ID": eid,
                         "批次号": batch_no,
                         "试验日期": test_date,
-                        "样品编号": str(s.get("row_idx", "")),
+                        "器皿位号": str(s.get("row_idx", "")),
                         "样品名": s.get("name", ""),
                         "模式": mode,
                         "器皿重": s.get("tare_weight"),
                         "样重": s.get("sample_weight"),
-                        "检查性干燥重": s.get("check_dry_weight"),
-                        "干燥后重": s.get("dry_weight"),
-                        "水分": s.get("_moisture"),
+                        "检查性干燥重": self._bankers_round(s["_display_dry"], 4),
+                        "干燥后重": self._bankers_round(s["_display_dry"], 4),
+                        "水分": s["_moisture"],
                         "平均水分": avg_m,
                         "精密度": prec,
-                        "分析水温度": aw_temp,
-                        "分析水时间": aw_time,
-                        "全水温度": tw_temp,
-                        "全水时间": tw_time,
+                        "分析水温度": temp_val if mode == "分析水" else None,
+                        "分析水时间": time_val if mode == "分析水" else None,
+                        "全水温度": temp_val if mode == "全水" else None,
+                        "全水时间": time_val if mode == "全水" else None,
                         "测试单位": 单位,
                         "化验员": 化验员,
                     })

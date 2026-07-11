@@ -41,7 +41,7 @@ for days_ago in range(0, 5):
             for i in range(len(rows) - len(weights), len(rows)):
                 r = list(rows[i]); r[11] = avg_m; r[12] = prec; rows[i] = tuple(r)
 
-conn.executemany('INSERT INTO experiment_results ("实验ID", "试验日期", "批次号", "样品编号", "样品名", "模式", "器皿重", "样重", "检查性干燥重", "干燥后重", "水分", "平均水分", "精密度", "分析水温度", "分析水时间", "全水温度", "全水时间", "测试单位", "化验员") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)', rows)
+conn.executemany('INSERT INTO experiment_results ("实验ID", "试验日期", "批次号", "器皿位号", "样品名", "模式", "器皿重", "样重", "检查性干燥重", "干燥后重", "水分", "平均水分", "精密度", "分析水温度", "分析水时间", "全水温度", "全水时间", "测试单位", "化验员") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)', rows)
 conn.commit()
 count = conn.execute("SELECT COUNT(*) FROM experiment_results WHERE batch_no LIKE 'MOCK_%'").fetchone()[0]
 conn.close()
