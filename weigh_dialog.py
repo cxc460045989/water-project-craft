@@ -86,21 +86,24 @@ class WeighDialog(QDialog):
                 background-color: #E8EBF0;
             }
             QLabel#weighTitle {
-                font-size: 36px;
+                font-size: 48px;
                 font-weight: bold;
-                color: #1F2937;
+                color: #0D47A1;
                 background: transparent;
+                font-family: "Courier New", "Consolas", monospace;
             }
             QLabel#weighSub {
-                font-size: 28px;
-                color: #4B5563;
+                font-size: 48px;
+                font-weight: bold;
+                color: #0D47A1;
                 background: transparent;
+                font-family: "Courier New", "Consolas", monospace;
             }
             QLabel#weighWeight {
                 font-size: 64px;
                 font-weight: bold;
                 color: #0D47A1;
-                font-family: "Courier New", "Consolas", "DejaVu Sans Mono", monospace;
+                font-family: "Courier New", "Consolas", monospace;
                 background: transparent;
                 padding: 8px 0px;
             }
@@ -136,7 +139,7 @@ class WeighDialog(QDialog):
         self.btn_cancel.setVisible(True)
         self.btn_cancel.setEnabled(False)
 
-        self.title_label.setText("正在称量 " + str(row) + " 号坩埚")
+        self.title_label.setText("正在称量 " + str(row + 1) + " 号坩埚")
         self.sub_label.setText("样品名称：" + name)
         self.weight_label.setText("{:.4f}g".format(weight))
 
@@ -186,7 +189,7 @@ class WeighDialog(QDialog):
         self.btn_cancel.setVisible(True)
         self.btn_cancel.setEnabled(True)
         self.title_label.setText("请添加样品后点击确认")
-        self.sub_label.setText(str(row) + "号 " + name)
+        self.sub_label.setText(str(row + 1) + "号 " + name)
         self.weight_label.setText("{:.4f}g".format(weight))
 
     def show_single_out_of_range(self, name, weight, lo, hi):
@@ -210,7 +213,7 @@ class WeighDialog(QDialog):
         self.btn_confirm.setVisible(False)
         self.btn_cancel.setVisible(True)
         self.btn_cancel.setEnabled(False)
-        self.title_label.setText(str(row) + "号称量完成")
+        self.title_label.setText(str(row + 1) + "号称量完成")
         self.sub_label.setText("重量: {:.4f}g".format(weight))
         self.weight_label.setText("")
     def reset(self):
