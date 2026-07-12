@@ -669,7 +669,7 @@ class MoistureAnalyzer(QMainWindow):
             if col != 0:
                 i.setFlags(i.flags() & ~Qt.ItemIsEditable)
             t.setItem(r, col, i)
-        # 第0行：校正坩埚 — 从 DB 读取上次保存的数据
+        # 第0行：校正坩埚（1号样位）
         corr_name = "校正坩埚"
         corr_weight = ""
         try:
@@ -1021,8 +1021,8 @@ class MoistureAnalyzer(QMainWindow):
         tbl = self._table
         if tbl is None:
             return
-        if col == 1:
-            # 模式列：切换 分析水/全水
+        if col == 1 and row != 0:
+            # 模式列：切换 分析水/全水（跳过校正坩埚）
             item = tbl.item(row, col)
             if item:
                 txt = item.text().strip()

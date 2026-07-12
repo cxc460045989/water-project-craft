@@ -86,23 +86,23 @@ class WeighDialog(QDialog):
                 background-color: #E8EBF0;
             }
             QLabel#weighTitle {
-                font-size: 28px;
+                font-size: 36px;
                 font-weight: bold;
                 color: #1F2937;
                 background: transparent;
             }
             QLabel#weighSub {
-                font-size: 20px;
+                font-size: 28px;
                 color: #4B5563;
                 background: transparent;
             }
             QLabel#weighWeight {
-                font-size: 56px;
+                font-size: 64px;
                 font-weight: bold;
                 color: #0D47A1;
                 font-family: "Courier New", "Consolas", "DejaVu Sans Mono", monospace;
                 background: transparent;
-                padding: 6px 0px;
+                padding: 8px 0px;
             }
         """)
         from button_styles import BUTTON_QSS
@@ -147,7 +147,7 @@ class WeighDialog(QDialog):
         self.btn_cancel.setVisible(True)
         self.btn_cancel.setEnabled(False)
 
-        self.title_label.setText("正在称量 " + str(row) + " 号样品重量")
+        self.title_label.setText("正在称量样品")
         self.sub_label.setText("样品名称：" + name)
         self.weight_label.setText("{:.4f}g".format(weight))
 

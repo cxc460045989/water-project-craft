@@ -116,7 +116,7 @@ class WeighWorker(QThread):
             send_cmd_with_uplink_check(self._serial, corr_cmd, "坩埚校正值")
             self._sleep(CMD_INTERVAL_S)
 
-        # 称量校正坩埚（0号位）
+        # 称量校正坩埚（1号样位，表格第0行）
         corr_name = "校正坩埚"
         if self._table_ref:
             item = self._table_ref.item(0, 0)
@@ -125,7 +125,7 @@ class WeighWorker(QThread):
         if self._running:
             self._weigh_one_tare(0, corr_name)
 
-        # 称量其余样品
+        # 称量其余样品（row 1+）
         for row, name, mode in self._valid_rows:
             if not self._running:
                 return
@@ -135,7 +135,7 @@ class WeighWorker(QThread):
         _log("批量坩埚称量完成")
         self.sig_status_msg.emit("正在上升样盘...")
         self._send_long_duration_cmd(CMD.SAMPLE_PLATE_UP, desc="样盘上升")
-        self._send_long_duration_cmd(CMD.OPEN_LID, desc="正在打开炉盖")
+        self._send_cmd(CMD.OPEN_LID, desc="打开炉盖")
         self._send_cmd(CMD.BEEPER_1S, desc="蜂鸣提示")
         self.sig_weigh_done.emit("tare")
 
@@ -143,6 +143,14 @@ class WeighWorker(QThread):
     def _batch_sample(self):
         _log("批量样品称量开始, 共 " + str(len(self._valid_rows)) + " 个")
         self._send_long_duration_cmd(CMD.CLOSE_LID, desc="正在关闭炉盖")
+        # 先称量校正坩埚（1号样位，表格第0行），样品重 = 器皿重
+        if self._running:
+            corr_name = "校正坩埚"
+            if self._table_ref:
+                item = self._table_ref.item(0, 0)
+                if item and item.text().strip():
+                    corr_name = item.text().strip()
+            self._weigh_one_sample_correction(0, corr_name)
         for row, name, mode in self._valid_rows:
             if not self._running:
                 return
@@ -152,7 +160,7 @@ class WeighWorker(QThread):
         _log("批量样品称量完成")
         self.sig_status_msg.emit("正在上升样盘...")
         self._send_long_duration_cmd(CMD.SAMPLE_PLATE_UP, desc="样盘上升")
-        self._send_long_duration_cmd(CMD.OPEN_LID, desc="正在打开炉盖")
+        self._send_cmd(CMD.OPEN_LID, desc="打开炉盖")
         self._send_cmd(CMD.BEEPER_1S, desc="蜂鸣提示")
         self.sig_weigh_done.emit("sample")
 
@@ -167,14 +175,11 @@ class WeighWorker(QThread):
                 return
             if not name.strip():
                 continue
-            position = row
+            position = row + 1
             _log("单个称量 row=" + str(row) + " name=" + name + " pos=" + str(position))
             while self._running:
                 self.sig_status_msg.emit("正在称量" + str(row) + "号样品: " + name)
-                if position > 0:
-                    self._send_move_to(position)
-                else:
-                    _log("校正坩埚在固定参考位置，跳过样盘移动")
+                self._send_move_to(position)
                 self._sleep(CMD_INTERVAL_S)
                 self._send_cmd(CMD.TARE, desc="天平清零")
                 _log("天平清零已发送, 等待 " + str(TARE_SETTLE_S) + "s 让天平稳定...")
@@ -277,14 +282,11 @@ class WeighWorker(QThread):
 
     # ===== 单个坩埚称量 =====
     def _weigh_one_tare(self, row, name):
-        position = row
+        position = row + 1
         _log("坩埚称量 row=" + str(row) + " name=" + name + " pos=" + str(position))
         label = "校正坩埚" if row == 0 else (str(row) + "号器皿")
         self.sig_status_msg.emit("正在称量" + label)
-        if position > 0:
-            self._send_move_to(position)
-        else:
-            _log("校正坩埚在固定参考位置，跳过样盘移动")
+        self._send_move_to(position)
         self._sleep(CMD_INTERVAL_S)
         self._send_cmd(CMD.TARE, desc="天平清零")
         _log("天平清零已发送, 等待 " + str(TARE_SETTLE_S) + "s 让天平稳定...")
@@ -298,26 +300,51 @@ class WeighWorker(QThread):
 
     # ===== 单个样品称量(批量中使用) =====
     def _weigh_one_sample(self, row, name):
-        position = row
+        position = row + 1
         _log("样品称量 row=" + str(row) + " name=" + name + " pos=" + str(position))
         self.sig_status_msg.emit("正在称量" + str(row) + "号样品: " + name)
-        if position > 0:
-            self._send_move_to(position)
-        else:
-            _log("校正坩埚在固定参考位置，跳过样盘移动")
+        self._send_move_to(position)
         self._sleep(CMD_INTERVAL_S)
         self._send_cmd(CMD.TARE, desc="天平清零")
         _log("天平清零已发送, 等待 " + str(TARE_SETTLE_S) + "s 让天平稳定...")
         self._sleep(TARE_SETTLE_S)
         self._send_long_duration_cmd(CMD.SAMPLE_PLATE_DOWN, desc="样盘下降")
-        total_weight = self._wait_simple_5s(row, name, "sample")
-        total_weight = round(total_weight, 4)
         tare_weight = self._get_tare_weight(row)
+        total_weight = self._wait_simple_5s(row, name, "sample", tare_weight)
+        total_weight = round(total_weight, 4)
         sample_weight = round(total_weight - tare_weight, 4)
         _log("样品称量 row=" + str(row) +
              " 总重=" + str(total_weight) +
              " 器皿重=" + str(tare_weight) +
              " 样重=" + str(sample_weight))
+        self.sig_weigh_progress.emit({
+            "phase": "sample", "row": row, "name": name,
+            "weight": sample_weight,
+            "total_weight": total_weight,
+            "tare_weight": tare_weight,
+        })
+        if self._backfill_cb:
+            self._backfill_cb(row, SAMPLE_TARGET_COL, sample_weight, "sample",
+                              total_weight=total_weight, tare_weight=tare_weight)
+
+    def _weigh_one_sample_correction(self, row, name):
+        """称量校正坩埚（样品阶段），样品重直接取器皿重"""
+        position = row + 1
+        _log("校正坩埚样品称量 row=" + str(row) + " name=" + name + " pos=" + str(position))
+        self.sig_status_msg.emit("正在称量校正坩埚: " + name)
+        self._send_move_to(position)
+        self._sleep(CMD_INTERVAL_S)
+        self._send_cmd(CMD.TARE, desc="天平清零")
+        self._sleep(TARE_SETTLE_S)
+        self._send_long_duration_cmd(CMD.SAMPLE_PLATE_DOWN, desc="样盘下降")
+        tare_weight = self._get_tare_weight(row)
+        total_weight = self._wait_simple_5s(row, name, "sample", tare_weight)
+        total_weight = round(total_weight, 4)
+        sample_weight = tare_weight
+        _log("校正坩埚样品 row=" + str(row) +
+             " 总重=" + str(total_weight) +
+             " 器皿重=" + str(tare_weight) +
+             " 样重(取器皿重)=" + str(sample_weight))
         self.sig_weigh_progress.emit({
             "phase": "sample", "row": row, "name": name,
             "weight": sample_weight,
@@ -443,12 +470,12 @@ class WeighWorker(QThread):
                 self._last_uplink_raw = raw_str
         return f["weight"], True
 
-    def _wait_simple_5s(self, row, name, phase):
+    def _wait_simple_5s(self, row, name, phase, tare_weight=0.0):
         """等待5秒持续读取天平重量，实时发送进度到 UI
         - 每 0.5s 读取一次上行帧重量
-        - 每次读到重量立即 emit sig_weighing_progress（UI 实时刷新重量+名称）
+        - sample 阶段 emit 前先减器皿重，UI 实时显示净重
         - 重量变化时才打日志（避免重复值刷屏）
-        - 5 秒后取最后一个读数返回
+        - 5 秒后取最后一个读数返回（原始值）
         """
         start = time.time()
         readings = []
@@ -459,12 +486,13 @@ class WeighWorker(QThread):
             weight, ok = self._read_uplink_weight()
             if ok:
                 readings.append(weight)
+                display_weight = round(weight - tare_weight, 4) if phase == "sample" else weight
                 self.sig_weigh_progress.emit({
-                    "phase": phase, "row": row, "name": name, "weight": weight
+                    "phase": phase, "row": row, "name": name, "weight": display_weight
                 })
                 if last_logged is None or abs(weight - last_logged) > 0.0001:
-                    _log("天平读数: row={} name={} {:.4f}g (已耗时{:.1f}s)".format(
-                        row, name, weight, time.time() - start))
+                    _log("天平读数: row={} name={} {:.4f}g (显示器皿={:.4f}g 已耗时{:.1f}s)".format(
+                        row, name, weight, display_weight, time.time() - start))
                     last_logged = weight
             self._sleep(0.5)
         if readings:

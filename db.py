@@ -409,11 +409,10 @@ def load_latest_samples():
 
 def batch_set_mode(mode):
     """批量更新所有样品的模式列（单条 SQL，不用逐行写）"""
-    conn, c = _get_conn()
+    conn = get_conn()
+    c = conn.cursor()
     try:
-        # 更新 experiment_samples
         c.execute("UPDATE experiment_samples SET mode=? WHERE mode IS NOT NULL AND mode != ''", (mode,))
-        # 更新 samples（兼容旧表）
         c.execute("UPDATE samples SET mode=? WHERE mode IS NOT NULL AND mode != ''", (mode,))
         conn.commit()
     except Exception as e:

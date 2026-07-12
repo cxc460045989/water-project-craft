@@ -253,6 +253,7 @@ def send_cmd_with_uplink_check(serial_mgr, cmd_bytes, desc=""):
     import time as _time
 
     RESP_TIMEOUT = 0.2  # 200ms
+    first_attempt = True
 
     while True:
         # ===== 步骤1: 发送指令 =====
@@ -262,10 +263,14 @@ def send_cmd_with_uplink_check(serial_mgr, cmd_bytes, desc=""):
             pass
         n = serial_mgr.send(cmd_bytes)
         if n == 0:
-            logger.warning("[CMD] 发送失败(%s)，准备重试" % desc)
+            if first_attempt:
+                logger.warning("[CMD] 发送失败(%s)，准备重试" % desc)
+                first_attempt = False
             _time.sleep(0.1)
             continue
-        logger.info("[CMD] 已发送: %s | %s" % (desc, cmd_bytes.hex()))
+        if first_attempt:
+            logger.info("[CMD] 已发送: %s | %s" % (desc, cmd_bytes.hex()))
+            first_attempt = False
 
         # ===== 步骤2: 等待仪器即时响应（上行帧）=====
         resp_start = _time.time()
