@@ -236,78 +236,41 @@ class UplinkBuffer:
 # ============================================================
 # send_cmd_with_uplink_check — 统一指令发送（上行检测 → 发指令 → 等返回值）
 # ============================================================
-def send_cmd_with_uplink_check(serial_mgr, cmd_bytes, desc="",
-                                max_duration=60.0, response_timeout=1.0):
-    """检测上行数据 → 发送指令 → 等待返回值，失败重试
+def send_cmd_with_uplink_check(serial_mgr, cmd_bytes, desc=""):
+    """发指令 → 等仪器即时响应（上行帧），200ms 超时重试，无限重试直到成功
 
-    新协议：不用握手指令。
-    完整流程:
-        1. 检测是否有上行数据（仪器在发上行帧）
-        2. 检测到后，发指令
-        3. 等待返回值（新上行帧 = 指令送达的确认），最多等 response_timeout 秒
-        4. 拿到返回值 → 成功
-        5. 超时未拿到 → 回到步骤 1 重试
-        6. 整个过程超过 max_duration 秒 → 报错提示检查仪器/串口线/程序
-
-    指令发送成功后计数器归零（每条指令独立）。
+    流程:
+        1. 发送指令到串口
+        2. 等待仪器即时返回上行帧（指令响应，非周期心跳）
+        3. 200ms 内拿到上行帧 → 成功
+        4. 超时 → 回到步骤 1 重试（无上限）
 
     参数:
         serial_mgr: SerialManager 实例
         cmd_bytes: 要发送的指令字节
-        desc: 指令描述（用于日志和错误提示）
-        max_duration: 整个过程最长耗时(秒)，默认 60
-        response_timeout: 发指令后等待返回值超时(秒)，默认 1.0
-
-    返回:
-        True  — 指令发送成功（拿到上行帧返回值）
-        False — 指令发送失败（超过 max_duration 秒）
-    侧效应:
-        通过 serial_mgr.error_occurred.emit() 发出详细错误信息
+        desc: 指令描述（用于日志）
     """
     import time as _time
 
-    deadline = _time.time() + max_duration
+    RESP_TIMEOUT = 0.2  # 200ms
 
-    while _time.time() < deadline:
-        # ===== 步骤1: 检测上行数据 =====
-        frame_detected = False
-        while _time.time() < deadline:
-            try:
-                raw = serial_mgr.read_all()
-            except Exception:
-                raw = b""
-            if raw:
-                buf = UplinkBuffer()
-                frames = buf.feed(raw)
-                if frames:
-                    serial_mgr.update_uplink_time()
-                    frame_detected = True
-                    break
-            _time.sleep(0.1)
-
-        if not frame_detected:
-            # 超过截止时间仍无上行数据
-            break
-
-        # ===== 步骤2: 发送指令 =====
+    while True:
+        # ===== 步骤1: 发送指令 =====
         try:
             serial_mgr.flush_input()
         except Exception:
             pass
         n = serial_mgr.send(cmd_bytes)
         if n == 0:
-            # 发送失败，回到步骤1重试
-            logger.warning("[CMD] 发送失败(%s)，准备重试", desc)
+            logger.warning("[CMD] 发送失败(%s)，准备重试" % desc)
             _time.sleep(0.1)
             continue
-        logger.info("[CMD] 已发送: %s | %s", desc, cmd_bytes.hex())
+        logger.info("[CMD] 已发送: %s | %s" % (desc, cmd_bytes.hex()))
 
-        # ===== 步骤3: 等待返回值（上行帧确认）=====
+        # ===== 步骤2: 等待仪器即时响应（上行帧）=====
         resp_start = _time.time()
         resp_received = False
-        while (_time.time() - resp_start) < response_timeout:
-            if _time.time() >= deadline:
-                break
+        while (_time.time() - resp_start) < RESP_TIMEOUT:
             try:
                 raw = serial_mgr.read_all()
             except Exception:
@@ -319,24 +282,13 @@ def send_cmd_with_uplink_check(serial_mgr, cmd_bytes, desc="",
                     serial_mgr.update_uplink_time()
                     resp_received = True
                     break
-            _time.sleep(0.1)
+            _time.sleep(0.05)
 
         if resp_received:
-            # 拿到返回值，成功
-            logger.info("[CMD] 发送成功，收到响应: %s", desc)
+            logger.info("[CMD] 发送成功，收到响应: %s" % desc)
             return True
 
-        # 未拿到返回值，回到步骤1重试
-        logger.warning("[CMD] 等待响应超时(%.1fs)，重新发送: %s", response_timeout, desc)
-
-    # ===== 超过 max_duration 秒 =====
-    msg = ("指令发送失败(%s)，已超过%d秒，"
-           "请检查:\n"
-           "1. 仪器是否已开机并联机\n"
-           "2. 串口线是否连接正常\n"
-           "3. 可尝试重启程序后重试") % (desc, int(max_duration))
-    serial_mgr.error_occurred.emit(msg)
-    return False
+        # 200ms 内无响应，重试（不打印日志避免刷屏）
 
 
 # ============================================================
@@ -351,5 +303,4 @@ def handshake(serial_mgr, retries=3, wait_ms=80, last_uplink_time=None, timeout=
     cmd = CommandBuilder.build_command(CMD.HANDSHAKE)
     return send_cmd_with_uplink_check(
         serial_mgr, cmd, desc="握手(兼容)",
-        max_duration=timeout,
     )

@@ -257,7 +257,6 @@ class WeighWorker(QThread):
         cmd = CommandBuilder.build_send_weight(weight_g)
         send_cmd_with_uplink_check(
             self._serial, cmd, "发送天平数据",
-            max_duration=10.0,
         )
 
     def _check_instrument_button(self):

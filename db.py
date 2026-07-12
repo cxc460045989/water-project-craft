@@ -417,7 +417,7 @@ def batch_set_mode(mode):
         c.execute("UPDATE samples SET mode=? WHERE mode IS NOT NULL AND mode != ''", (mode,))
         conn.commit()
     except Exception as e:
-        logger.error("[DB] batch_set_mode error:", e)
+        logger.error("[DB] batch_set_mode error: %s" % e)
     finally:
         conn.close()
 

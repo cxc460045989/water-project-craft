@@ -43,6 +43,11 @@ class Logger:
         line = ts + " " + msg
         print(line)
         self._write_file(line)
+    def warning(self, msg):
+        ts = datetime.datetime.now().strftime("%H:%M:%S.%f")[:-3]
+        line = ts + " [WARN] " + msg
+        print(line)
+        self._write_file(line)
     def error(self, msg):
         ts = datetime.datetime.now().strftime("%H:%M:%S.%f")[:-3]
         line = ts + " [ERROR] " + msg
