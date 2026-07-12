@@ -1,6 +1,6 @@
 ﻿# -*- coding: utf-8 -*-
 """追加样品功能模块 - 微机全自动水分测定仪
-完整串口控制流程：移动样位 -> 称器皿 -> 称样品 -> 存储
+完整串口控制流程：移动样位 -> 称坩埚 -> 称样品 -> 存储
 依赖: protocol_layer.py, serial_comm.py, db.py
 架构: QObject + moveToThread + 信号槽
 """
@@ -114,7 +114,7 @@ class SampleAppendWorker(QObject):
         self._step_timer_max = 10  # 10 ticks at 200ms = 2s
         self._step_timer.start(200)
 
-    # ===== 步骤3: 器皿称量准备 =====
+    # ===== 步骤3: 坩埚称量准备 =====
 
     def _step3_tare_prepare(self):
         self.sig_status_update.emit("步骤3: 天平清零...")
@@ -133,7 +133,7 @@ class SampleAppendWorker(QObject):
         self._step3_tare_stable()
 
     def _step3_tare_stable(self):
-        self.sig_status_update.emit("步骤3: 等待器皿重量稳定5s...")
+        self.sig_status_update.emit("步骤3: 等待坩埚重量稳定5s...")
         _log("[步骤3] 下降到位, 等待5秒稳定")
         self._step_timer_type = "delay"
         self._step_timer_target = self._step4_tare_read
@@ -141,13 +141,13 @@ class SampleAppendWorker(QObject):
         self._step_timer_max = 25  # 25 ticks at 200ms = 5s
         self._step_timer.start(200)
 
-    # ===== 步骤4: 器皿重量采集入库 =====
+    # ===== 步骤4: 坩埚重量采集入库 =====
 
     def _step4_tare_read(self):
         weight = self._read_stable_weight()
         self._tare_weight = _format_weight(weight)
-        _log("[步骤4] 器皿重: %.4fg" % self._tare_weight)
-        self.sig_status_update.emit("步骤4: 器皿重%.4fg" % self._tare_weight)
+        _log("[步骤4] 坩埚重: %.4fg" % self._tare_weight)
+        self.sig_status_update.emit("步骤4: 坩埚重%.4fg" % self._tare_weight)
         self._save_tare_to_db(self._tare_weight)
         self._step5_sample_prompt()
 
@@ -209,7 +209,7 @@ class SampleAppendWorker(QObject):
         """读取最终重量, 校验, 存储或重试"""
         final_weight = self._read_stable_weight()
         sample_weight = _format_weight(final_weight - self._tare_weight)
-        _log("[称量结束] 天平=%.4f 器皿=%.4f 样品=%.4f range=[%.4f,%.4f]" %
+        _log("[称量结束] 天平=%.4f 坩埚=%.4f 样品=%.4f range=[%.4f,%.4f]" %
              (final_weight, self._tare_weight, sample_weight, self._weight_lo, self._weight_hi))
 
         if sample_weight < self._weight_lo or sample_weight > self._weight_hi:
@@ -327,7 +327,7 @@ class SampleAppendWorker(QObject):
             upsert_experiment_sample(eid, self._position,
                                      name=self._sample_name,
                                      tare_weight=tare_weight)
-            _log("[DB] 器皿重%.4f写入 row=%d" % (tare_weight, self._position))
+            _log("[DB] 坩埚重%.4f写入 row=%d" % (tare_weight, self._position))
             from db import save_sample
             save_sample(self._position, tare_weight=tare_weight, name=self._sample_name)
         except Exception as e:

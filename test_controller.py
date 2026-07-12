@@ -339,10 +339,10 @@ class TestWorker(QObject):
                         "实验ID": eid,
                         "批次号": batch_no,
                         "试验日期": test_date,
-                        "器皿位号": str(s.get("row_idx", "")),
+                        "坩埚位号": str(s.get("row_idx", "")),
                         "样品名": s.get("name", ""),
                         "模式": mode,
-                        "器皿重": s.get("tare_weight"),
+                        "坩埚重": s.get("tare_weight"),
                         "样重": s.get("sample_weight"),
                         "检查性干燥重": self._bankers_round(s["_display_dry"], 4),
                         "干燥后重": self._bankers_round(s["_display_dry"], 4),
@@ -502,10 +502,10 @@ class TestWorker(QObject):
             if stable_weight is None:
                 self.sig_error.emit("称量失败 row=%d %s" % (row_idx, name))
                 continue
-            # 干燥重公式: 干燥重 = 读数 - 器皿重 + (坩埚校正 - 干燥校正)
+            # 干燥重公式: 干燥重 = 读数 - 坩埚重 + (坩埚校正 - 干燥校正)
             dry_weight = round(stable_weight - tare + tare_offset, 4)
             mid_val = int(round(dry_weight * 10000)) + 1000000
-            _log("称量 row=%d name=%s 读数=%.4f 器皿重=%.4f 干燥重=%.4f" %
+            _log("称量 row=%d name=%s 读数=%.4f 坩埚重=%.4f 干燥重=%.4f" %
                  (row_idx, name, stable_weight, tare, dry_weight))
             self.sig_weigh_result.emit(row_idx, dry_weight, self._phase)
             self._save_weigh_result(row_idx, name, mode, stable_weight, mid_val, dry_weight, tare, tare_offset)

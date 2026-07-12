@@ -88,7 +88,7 @@ class WeighDialog(QDialog):
             QLabel#weighTitle {
                 font-size: 48px;
                 font-weight: bold;
-                color: #0D47A1;
+                color: #1F2937;
                 background: transparent;
                 font-family: "Courier New", "Consolas", monospace;
             }
@@ -129,7 +129,6 @@ class WeighDialog(QDialog):
         self.btn_cancel.setVisible(True)
         self.btn_cancel.setEnabled(False)
         self.title_label.setText(msg)
-        self.title_label.setStyleSheet("color: #1F2937;")
         self.sub_label.setText("")
         self.weight_label.setText("")
 
@@ -141,7 +140,6 @@ class WeighDialog(QDialog):
         self.btn_cancel.setEnabled(False)
 
         self.title_label.setText("正在称量 " + str(row + 1) + " 号坩埚")
-        self.title_label.setStyleSheet("")
         self.sub_label.setText("样品名称：" + name)
         self.weight_label.setText("{:.4f}g".format(weight))
 
@@ -152,8 +150,7 @@ class WeighDialog(QDialog):
         self.btn_cancel.setVisible(True)
         self.btn_cancel.setEnabled(False)
 
-        self.title_label.setText("正在称量样品")
-        self.title_label.setStyleSheet("")
+        self.title_label.setText("正在称量 " + str(row + 1) + " 号样品")
         self.sub_label.setText("样品名称：" + name)
         self.weight_label.setText("{:.4f}g".format(weight))
 
@@ -161,7 +158,6 @@ class WeighDialog(QDialog):
         """放样提示界面"""
         self._phase = "add_sample"
         self.title_label.setText("请添加样品后开始称量样品重量")
-        self.title_label.setStyleSheet("")
         self.sub_label.setText("")
         self.weight_label.setText("")
         self.btn_action.setText("开始称量样品重量")
@@ -174,7 +170,6 @@ class WeighDialog(QDialog):
         """流程完成，延迟关闭"""
         self._phase = "finished"
         self.title_label.setText("称量完成")
-        self.title_label.setStyleSheet("")
         self.sub_label.setText("")
         self.weight_label.setText("")
         self.btn_action.setVisible(False)
@@ -194,7 +189,6 @@ class WeighDialog(QDialog):
         self.btn_cancel.setVisible(True)
         self.btn_cancel.setEnabled(True)
         self.title_label.setText("请添加样品后点击确认")
-        self.title_label.setStyleSheet("")
         self.sub_label.setText(str(row + 1) + "号 " + name)
         self.weight_label.setText("{:.4f}g".format(weight))
 
@@ -205,7 +199,6 @@ class WeighDialog(QDialog):
         self.btn_cancel.setVisible(True)
         self.btn_cancel.setEnabled(False)
         self.title_label.setText("样品重量超出范围")
-        self.title_label.setStyleSheet("")
         self.sub_label.setText(name + " weight={:.4f}g 范围=[{:.4f},{:.4f}]".format(weight, lo, hi))
         self.weight_label.setText("将重新称量该样品")
 
@@ -221,7 +214,6 @@ class WeighDialog(QDialog):
         self.btn_cancel.setVisible(True)
         self.btn_cancel.setEnabled(False)
         self.title_label.setText(str(row + 1) + "号称量完成")
-        self.title_label.setStyleSheet("")
         self.sub_label.setText("重量: {:.4f}g".format(weight))
         self.weight_label.setText("")
     def reset(self):

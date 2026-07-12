@@ -139,7 +139,7 @@ class WeighWorker(QThread):
     def _batch_sample(self):
         _log("批量样品称量开始, 共 " + str(len(self._valid_rows)) + " 个")
         self._send_long_duration_cmd(CMD.CLOSE_LID, desc="正在关闭炉盖")
-        # 称量1号坩埚样品（表格第0行），样品重 = 器皿重
+        # 称量1号坩埚样品（表格第0行），样品重 = 坩埚重
         if self._running:
             corr_name = "1号坩埚"
             if self._table_ref:
@@ -212,7 +212,7 @@ class WeighWorker(QThread):
                 sample_weight = round(total_weight - tare_weight, 4) if tare_weight else round(total_weight, 4)
                 _log("单个称量 row=" + str(row) +
                      " 总重=" + str(total_weight) +
-                     " 器皿重=" + str(tare_weight) +
+                     " 坩埚重=" + str(tare_weight) +
                      " 样重=" + str(sample_weight))
                 lo, hi = self._get_weight_range_for_mode(mode)
                 if sample_weight < lo or sample_weight > hi:
@@ -318,7 +318,7 @@ class WeighWorker(QThread):
         sample_weight = round(total_weight - tare_weight, 4)
         _log("样品称量 row=" + str(row) +
              " 总重=" + str(total_weight) +
-             " 器皿重=" + str(tare_weight) +
+             " 坩埚重=" + str(tare_weight) +
              " 样重=" + str(sample_weight))
         self.sig_weigh_progress.emit({
             "phase": "sample", "row": row, "name": name,
@@ -331,7 +331,7 @@ class WeighWorker(QThread):
                               total_weight=total_weight, tare_weight=tare_weight)
 
     def _weigh_one_sample_correction(self, row, name):
-        """称量校正坩埚（样品阶段），样品重直接取器皿重"""
+        """称量校正坩埚（样品阶段），样品重直接取坩埚重"""
         position = row + 1
         _log("坩埚样品称量 row=" + str(row) + " name=" + name + " pos=" + str(position))
         self.sig_weigh_progress.emit({"phase": "sample", "row": row, "name": name, "weight": 0.0})
@@ -341,12 +341,12 @@ class WeighWorker(QThread):
         self._send_cmd(CMD.TARE, desc="天平清零")
         _log("天平清零已发送")
         tare_weight = self._get_tare_weight(row)
-        total_weight = self._wait_descend_and_read(row, name, "sample", tare_weight)
-        sample_weight = tare_weight
+        total_weight = self._wait_descend_and_read(row, name, "sample", 0.0)
+        sample_weight = total_weight
         _log("校正坩埚样品 row=" + str(row) +
              " 总重=" + str(total_weight) +
-             " 器皿重=" + str(tare_weight) +
-             " 样重(取器皿重)=" + str(sample_weight))
+             " 坩埚重=" + str(tare_weight) +
+             " 样重(取天平读数)=" + str(sample_weight))
         self.sig_weigh_progress.emit({
             "phase": "sample", "row": row, "name": name,
             "weight": sample_weight,

@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """数据查询对话框 - 微机全自动水分测定仪
 框架: PySide2 (Qt5) - 兼容Windows 7 / 麒麟Linux x86/ARM64
 从 experiment_results 表查询已完成实验的历史数据
@@ -315,7 +315,7 @@ class DataQueryDialog(QDialog):
                 r.get("样品名", ""),
                 r.get("试验日期", ""),
                 r.get("模式", ""),
-                self._fmt(r.get("器皿重"), 4),
+                self._fmt(r.get("坩埚重"), 4),
                 self._fmt(r.get("样重"), 4),
                 self._fmt(r.get("检查性干燥重"), 4),
                 self._fmt(r.get("干燥后重"), 4),
@@ -412,7 +412,7 @@ class DataQueryDialog(QDialog):
                         str(r.get("样品名", "")),
                         str(r.get("试验日期", "")),
                         str(r.get("模式", "")),
-                        self._fmt(r.get("器皿重"), 4),
+                        self._fmt(r.get("坩埚重"), 4),
                         self._fmt(r.get("样重"), 4),
                         self._fmt(r.get("检查性干燥重"), 4),
                         self._fmt(r.get("干燥后重"), 4),
@@ -461,7 +461,7 @@ class DataQueryDialog(QDialog):
             cells = [
                 r.get("样品名", ""),
                 r.get("模式", ""),
-                self._fmt(r.get("器皿重"), 4),
+                self._fmt(r.get("坩埚重"), 4),
                 self._fmt(r.get("样重"), 4),
                 self._fmt(r.get("检查性干燥重"), 4),
                 self._fmt(r.get("干燥后重"), 4),
@@ -485,7 +485,7 @@ th { background-color: #F3F4F6; }
 测试单位：%s                    打印日期：%s</pre>
 <table class="data">
 <thead><tr>
-<th>样品名称</th><th>模式</th><th>器皿重(g)</th><th>样品重量(g)</th>
+<th>样品名称</th><th>模式</th><th>坩埚重(g)</th><th>样品重量(g)</th>
 <th>检查性干燥重(g)</th><th>干燥重量(g)</th><th>水分(%)</th>
 <th>平均值(%)</th><th>精密度(%)</th>
 </tr></thead>

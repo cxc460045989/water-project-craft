@@ -621,7 +621,7 @@ class MoistureAnalyzer(QMainWindow):
         pl.addWidget(w, 1)
 
     def _build_table(self, pl):
-        hd = ["样品名称","模式","器皿重(g)","样品重(g)",
+        hd = ["样品名称","模式","坩埚重(g)","样品重(g)",
                "检查性干燥重量(g)","干燥重量(g)","水分(%)","平均值(%)","精密度(%)"]
         t = QTableWidget()
         sc = load_params().get("sample_count", 24) or 24

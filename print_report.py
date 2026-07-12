@@ -26,7 +26,7 @@ th {{ background-color: #F3F4F6; }}
 <h1>水分仪分析报表</h1>
 <pre style="font-size:10pt; font-family:'SimSun','Microsoft YaHei',serif; margin:0;">测试单位：{unit}                    打印日期：{date_str}</pre>
 <table class="data">
-<thead><tr><th>样品名称</th><th>模式</th><th>器皿重(g)</th><th>样品重量(g)</th><th>检查性干燥重量(g)</th><th>干燥重量(g)</th><th>水分(%)</th><th>平均值(%)</th><th>精密度(%)</th></tr></thead>
+<thead><tr><th>样品名称</th><th>模式</th><th>坩埚重(g)</th><th>样品重量(g)</th><th>检查性干燥重量(g)</th><th>干燥重量(g)</th><th>水分(%)</th><th>平均值(%)</th><th>精密度(%)</th></tr></thead>
 <tbody>{rows_html}</tbody>
 </table>
 <pre style="font-size:10pt; font-family:'SimSun','Microsoft YaHei',serif; margin:8px 0 0 0;">化验员：{tech}                    审核：{reviewer}</pre>
