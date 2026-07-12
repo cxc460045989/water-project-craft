@@ -669,9 +669,26 @@ class MoistureAnalyzer(QMainWindow):
             if col != 0:
                 i.setFlags(i.flags() & ~Qt.ItemIsEditable)
             t.setItem(r, col, i)
-        # 第0行：校正坩埚（写死）
-        s(0, 0, "校正坩埚")
-        s(0, 2, "25.0235")
+        # 第0行：校正坩埚 — 从 DB 读取上次保存的数据
+        corr_name = "校正坩埚"
+        corr_weight = ""
+        try:
+            from db import load_latest_samples
+            latest = load_latest_samples()
+            for row in latest:
+                if row.get("row_idx") == 0:
+                    db_name = row.get("name", "").strip()
+                    if db_name:
+                        corr_name = db_name
+                    db_w = row.get("tare_weight")
+                    if db_w is not None:
+                        corr_weight = "{:.4f}".format(db_w)
+                    break
+        except Exception:
+            pass
+        s(0, 0, corr_name)
+        if corr_weight:
+            s(0, 2, corr_weight)
         for r in range(1, t.rowCount()):
             if t.item(r, 0) is None:
                 empty = QTableWidgetItem("")
@@ -736,38 +753,13 @@ class MoistureAnalyzer(QMainWindow):
 
 
 
-    # ---- table data real-time persistence ----
-
-    def _on_cell_changed(self, row, col):
-        import datetime
-        _ts = lambda: datetime.datetime.now().strftime("%H:%M:%S.%f")[:-3]
-        try:
-            item = self._table.item(row, col)
-            if item is None: return
-            val = item.text().strip()
-            col_map = {0: "name", 1: "mode", 2: "tare_weight", 3: "sample_weight",
-                       4: "check_dry_weight", 5: "dry_weight", 6: "moisture",
-                       7: "avg_moisture", 8: "precision_val"}
-            if col not in col_map: return
-            logger.debug("[DB-CELL] _on_cell_changed: row=" + str(row) + " col=" + str(col) + " key=" + col_map[col] + " val=" + val)
-            # 同时写入 experiment_samples 和 samples（兼容）
-            from db import upsert_experiment_sample, ensure_experiment
-            eid = ensure_experiment()
-            upsert_experiment_sample(eid, row, **{col_map[col]: val})
-            logger.debug("[DB-CELL] upsert_experiment_sample OK: eid=" + str(eid))
-            from db import save_sample
-            save_sample(row + 1, **{col_map[col]: val})
-            logger.debug("[DB-CELL] save_sample OK: row_id=" + str(row + 1))
-        except Exception as e:
-            logger.debug("[DB-CELL] ERROR: " + str(e))
-
     def save_all_samples_to_db(self):
         from db import save_all_samples
         data_list = []
         col_map = {0: "name", 1: "mode", 2: "tare_weight", 3: "sample_weight",
                    4: "check_dry_weight", 5: "dry_weight", 6: "moisture",
                    7: "avg_moisture", 8: "precision_val"}
-        for r in range(1, self._table.rowCount()):
+        for r in range(0, self._table.rowCount()):
             row_data = {}
             has_data = False
             for c in range(self._table.columnCount()):
@@ -883,7 +875,7 @@ class MoistureAnalyzer(QMainWindow):
         col_map = {0: "name", 1: "mode", 2: "tare_weight", 3: "sample_weight",
                    4: "check_dry_weight", 5: "dry_weight", 6: "moisture",
                    7: "avg_moisture", 8: "precision_val"}
-        for r in range(1, self._table.rowCount()):
+        for r in range(0, self._table.rowCount()):
             row_data = {}
             has_data = False
             for c in range(self._table.columnCount()):
@@ -906,7 +898,7 @@ class MoistureAnalyzer(QMainWindow):
             for row in rows:
                 rid = row.get("row_idx")
                 logger.debug("[RESTORE] processing row_idx=" + str(rid) + " name=" + str(row.get("name")) + " tare=" + str(row.get("tare_weight")) + " sample=" + str(row.get("sample_weight")))
-                if rid is None or rid == 0:
+                if rid is None:
                     continue
                 r = rid
                 if r >= t.rowCount():
@@ -1378,13 +1370,26 @@ class MoistureAnalyzer(QMainWindow):
                                          title="清除确认", danger=True):
                 return
             if self._table:
-                for r in range(1, self._table.rowCount()):
-                    for c in range(self._table.columnCount()):
-                        if c == 1:  # 模式列保留
-                            continue
-                        item = self._table.item(r, c)
-                        if item:
-                            item.setText("")
+                self._table.blockSignals(True)
+                try:
+                    for r in range(0, self._table.rowCount()):
+                        for c in range(self._table.columnCount()):
+                            if c == 1:  # 模式列保留
+                                continue
+                            if r == 0 and c == 0:  # 校正坩埚名称保留
+                                continue
+                            item = self._table.item(r, c)
+                            if item:
+                                item.setText("")
+                finally:
+                    self._table.blockSignals(False)
+                # 清理数据库
+                from db import get_conn
+                conn = get_conn()
+                conn.execute("DELETE FROM experiment_samples")
+                conn.execute("DELETE FROM samples")
+                conn.commit()
+                conn.close()
 
 
 def main():

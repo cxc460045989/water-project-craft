@@ -42,8 +42,6 @@ class InstrumentSimulator(QObject):
         self._interval_ms = 1000
         # 下行响应规则
         self._cmd_responses = OrderedDict()
-        self._handshake_busy_count = 0
-        self._handshake_busy_remaining = 0
         # 仪器状态
         self._tare_offset = 0.0
         self._plate_pos = self.PLATE_POS_UPPER
@@ -61,10 +59,6 @@ class InstrumentSimulator(QObject):
         self._running = False
         # QTimer驱动自动上行上报
         self._timer = None
-
-    def set_handshake_busy(self, n_busy):
-        """设置前n_busy次握手指令返回设备忙(无响应)"""
-        self._handshake_busy_remaining = n_busy
 
     def set_online(self, val):
         self._online = 1 if val else 0
@@ -126,12 +120,9 @@ class InstrumentSimulator(QObject):
         """接收下行指令, 解析并模拟执行"""
         if not data:
             return b""
-        # 处理握手指令
+        # 处理握手指令 [已废弃 - 新协议不再使用握手，保留仅为兼容旧测试]
         if data == CommandBuilder.build_command(CMD.HANDSHAKE):
-            self.sig_cmd_received.emit(data, "handshake")
-            if self._handshake_busy_remaining > 0:
-                self._handshake_busy_remaining -= 1
-                return b""  # 模拟设备忙, 无响应
+            self.sig_cmd_received.emit(data, "handshake(deprecated)")
             return b'\x4F\x4B\x01\x45\x4E\x44'
 
         # 处理其他指令
@@ -366,11 +357,10 @@ class WorkflowValidator:
 
     # ===== 仪器生命周期 =====
 
-    def create_simulator(self, initial_temp=25.0, online=True, handshake_busy=0):
+    def create_simulator(self, initial_temp=25.0, online=True):
         self._sim = InstrumentSimulator()
         self._sim.set_temp(initial_temp)
         self._sim.set_online(online)
-        self._sim.set_handshake_busy(handshake_busy)
         from PySide2.QtWidgets import QApplication
         _app = QApplication.instance() or QApplication(sys.argv)
         self._sim.sig_cmd_received.connect(self._on_cmd)

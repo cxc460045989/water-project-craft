@@ -12,7 +12,6 @@ from PySide2.QtCore import QObject, Signal, QTimer
 from protocol_layer import CommandBuilder, CMD, UplinkBuffer
 from logging_util import logger
 
-HANDSHAKE_RETRIES = 10
 CMD_INTERVAL_S = 0.15
 STABLE_WEIGHT_SAMPLES = 15
 STABLE_TOLERANCE = 0.0005
@@ -385,7 +384,7 @@ class TestWorker(QObject):
         desc = "发送水分测试指令(" + label + ")"
         self.sig_step_progress.emit(desc)
         _log(desc)
-        self._send_cmd_with_handshake(func, desc, callback=self._step_send_temp_control)
+        self._send_cmd_code_with_uplink_check(func, desc, callback=self._step_send_temp_control)
 
     # ========= 步骤3: 发送控温指令 =========
 
@@ -396,7 +395,7 @@ class TestWorker(QObject):
         desc = "发送控温 %dC" % temp_c
         self.sig_step_progress.emit(desc)
         _log(desc)
-        self._send_raw_with_handshake(cmd, desc, callback=self._step_wait_heating)
+        self._send_cmd_with_uplink_check(cmd, desc, callback=self._step_wait_heating)
 
     # ========= 步骤4: 等待升温进入恒温保持 =========
 
@@ -433,12 +432,12 @@ class TestWorker(QObject):
                     self._state.last_cmd_time = now
                     fan_on = self._state.cfg.aw_fan if self._phase == "analysis_water" else self._state.cfg.tw_fan
                     func = CMD.MOISTURE_TEST_1 if fan_on else CMD.MOISTURE_TEST_2
-                    self._send_cmd_with_handshake(func, "重发水分测试", callback=None)
+                    self._send_cmd_code_with_uplink_check(func, "重发水分测试", callback=None)
             # 剩余30秒: 提前关闭氮气鼓风
             if remaining == 30:
                 _log("恒温剩余30秒, 关闭气体")
-                self._send_cmd_with_handshake(CMD.N2_OFF, "关氮气", callback=None)
-                self._send_cmd_with_handshake(CMD.FAN_OFF, "关鼓风", callback=None)
+                self._send_cmd_code_with_uplink_check(CMD.N2_OFF, "关氮气", callback=None)
+                self._send_cmd_code_with_uplink_check(CMD.FAN_OFF, "关鼓风", callback=None)
 
     # ========= 步骤5: 恒温结束-称量 =========
 
@@ -488,7 +487,7 @@ class TestWorker(QObject):
         corr_w = self._state.cfg.aw_corr_crucible if self._phase == "analysis_water" else self._state.cfg.tw_corr_crucible
         if corr_w > 0:
             cmd = CommandBuilder.build_send_weight(corr_w)
-            self._send_raw_with_handshake(cmd, "发送坩埚校正值 %.4fg" % corr_w)
+            self._send_cmd_with_uplink_check(cmd, "发送坩埚校正值 %.4fg" % corr_w)
             time.sleep(0.2)
 
         tare = self._state.cfg.aw_tare_weight if self._phase == "analysis_water" else self._state.cfg.tw_tare_weight
@@ -562,41 +561,28 @@ class TestWorker(QObject):
 
     # ========= 串口工具方法 =========
 
-    def _send_cmd_with_handshake(self, func_code, desc, callback=None):
-        """握手->发送固定4字节指令"""
+    def _send_cmd_with_uplink_check(self, cmd_bytes, desc, callback=None):
+        """检测上行活跃后发指令(统一入口, 去握手)"""
         if not self._running:
             return
-        if not self._do_handshake():
-            self.sig_error.emit("握手失败: " + desc)
-            return
-        self._serial.flush_input()
-        cmd = CommandBuilder.build_command(func_code)
-        n = self._serial.send(cmd)
-        if n == 0:
+        from protocol_layer import send_cmd_with_uplink_check
+        ok = send_cmd_with_uplink_check(
+            self._serial, cmd_bytes, desc,
+        )
+        if not ok:
             self.sig_error.emit("指令发送失败: " + desc)
             return
-        _log("指令已发送: %s %s" % (desc, cmd.hex()))
+        _log("指令已发送: %s" % desc)
         if callback:
             QTimer.singleShot(int(CMD_INTERVAL_S * 1000), callback)
 
-    def _send_raw_with_handshake(self, cmd_bytes, desc, callback=None):
-        """握手后发送变长指令(控温等)"""
-        if not self._running:
-            return
-        if not self._do_handshake():
-            self.sig_error.emit("握手失败: " + desc)
-            return
-        self._serial.flush_input()
-        n = self._serial.send(cmd_bytes)
-        if n == 0:
-            self.sig_error.emit("指令发送失败: " + desc)
-            return
-        _log("指令已发送: %s %s" % (desc, cmd_bytes.hex()))
-        if callback:
-            QTimer.singleShot(int(CMD_INTERVAL_S * 1000), callback)
+    def _send_cmd_code_with_uplink_check(self, func_code, desc, callback=None):
+        """发送固定4字节指令(统一入口, 去握手)"""
+        cmd = CommandBuilder.build_command(func_code)
+        self._send_cmd_with_uplink_check(cmd, desc, callback)
 
     def _safe_send_cmd(self, func_code, desc):
-        """安全发送指令(不握手)"""
+        """安全发送指令(不阻塞，允许失败)"""
         if not self._serial or not self._serial.is_connected:
             return
         try:
@@ -606,36 +592,6 @@ class TestWorker(QObject):
             _log("安全发送: %s %s" % (desc, cmd.hex()))
         except Exception as e:
             _log("安全发送失败: " + str(e))
-
-    def _do_handshake(self):
-        """执行握手, 带上行链路检测
-        首次握手等待OK(仪器100ms内响应)
-        失败后重试(最多3倍+上行帧超时检测)
-        """
-        self._serial.flush_input()
-        self._serial.send(CommandBuilder.build_command(CMD.HANDSHAKE))
-        time.sleep(0.08)
-        resp = self._serial.read_all()
-        HANDSHAKE_RESP = b'\x4F\x4B\x01\x45\x4E\x44'
-        if resp and HANDSHAKE_RESP in resp:
-            return True
-
-        for attempt in range(HANDSHAKE_RETRIES * 3):
-            if not self._running:
-                return False
-            elapsed = time.time() - self._last_uplink_time
-            if elapsed > UPLINK_TIMEOUT_S:
-                _log("上行帧+握手超时 %.1fs, 判定链路断开" % elapsed)
-                return False
-            time.sleep(0.1)
-            self._serial.flush_input()
-            self._serial.send(CommandBuilder.build_command(CMD.HANDSHAKE))
-            time.sleep(0.08)
-            resp = self._serial.read_all()
-            if resp and HANDSHAKE_RESP in resp:
-                return True
-            _log("握手失败, 重试第 %d 次..." % (attempt + 1))
-        return False
 
     def _wait_stable_weight(self, timeout=15.0):
         """等待天平读数稳定, 返回均值

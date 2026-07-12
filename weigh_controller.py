@@ -12,8 +12,6 @@ from protocol_layer import CMD
 
 # ======== 可配置常量 ========
 HEARTBEAT_INTERVAL_S = 1.0
-HANDSHAKE_RETRIES = 10
-WAIT_AFTER_HANDSHAKE_S = 2.0
 STABLE_WAIT_S = 5.0
 BEEPER_DURATION_S = 10
 CMD_INTERVAL_S = 0.15
@@ -21,8 +19,6 @@ UPLINK_TIMEOUT_S = 3.0
 TARE_SETTLE_S = 0.5          # TARE 指令后天平稳定等待时间
 MECHANICAL_WAIT_S = 3.0      # 机械动作（样盘升降）等待时间
 LID_WAIT_S = 15.0            # 炉盖开关后等待时间
-MIN_VALID_READINGS = 3       # 稳定检测最少有效读数
-STABLE_THRESHOLD_G = 0.0005  # 天平稳定判定阈值(g)
 TARE_TARGET_COL = 2
 SAMPLE_TARGET_COL = 3
 WEIGHT_REPORT_INTERVAL_S = 1.0
@@ -109,6 +105,27 @@ class WeighWorker(QThread):
     def _batch_tare(self):
         _log("批量坩埚称量开始, 共 " + str(len(self._valid_rows)) + " 个")
         self._send_long_duration_cmd(CMD.CLOSE_LID, desc="正在关闭炉盖")
+
+        # 先发送坩埚校正值到仪器
+        corr_w = self._get_crucible_correction_weight()
+        if corr_w > 0:
+            _log("发送坩埚校正值: {:.4f}g".format(corr_w))
+            from protocol_layer import CommandBuilder
+            corr_cmd = CommandBuilder.build_send_weight(corr_w)
+            from protocol_layer import send_cmd_with_uplink_check
+            send_cmd_with_uplink_check(self._serial, corr_cmd, "坩埚校正值")
+            self._sleep(CMD_INTERVAL_S)
+
+        # 称量校正坩埚（0号位）
+        corr_name = "校正坩埚"
+        if self._table_ref:
+            item = self._table_ref.item(0, 0)
+            if item and item.text().strip():
+                corr_name = item.text().strip()
+        if self._running:
+            self._weigh_one_tare(0, corr_name)
+
+        # 称量其余样品
         for row, name, mode in self._valid_rows:
             if not self._running:
                 return
@@ -154,18 +171,14 @@ class WeighWorker(QThread):
             _log("单个称量 row=" + str(row) + " name=" + name + " pos=" + str(position))
             while self._running:
                 self.sig_status_msg.emit("正在称量" + str(row) + "号样品: " + name)
-                self._send_move_to(position)
+                if position > 0:
+                    self._send_move_to(position)
+                else:
+                    _log("校正坩埚在固定参考位置，跳过样盘移动")
                 self._sleep(CMD_INTERVAL_S)
-                if not self._do_handshake_with_retry():
-                    self.sig_error.emit("单个称量 row=" + str(row) + " 握手失败，跳过")
-                    break
-                self._sleep(WAIT_AFTER_HANDSHAKE_S)
                 self._send_cmd(CMD.TARE, desc="天平清零")
                 _log("天平清零已发送, 等待 " + str(TARE_SETTLE_S) + "s 让天平稳定...")
                 self._sleep(TARE_SETTLE_S)
-                if not self._do_handshake_with_retry():
-                    self.sig_error.emit("单个称量 row=" + str(row) + " 天平清零后握手失败，跳过")
-                    break
                 self._send_cmd(CMD.SAMPLE_PLATE_DOWN, desc="样盘下降")
                 self._sleep(MECHANICAL_WAIT_S)
                 self._send_cmd(CMD.BEEPER_1S, desc="蜂鸣提示加样")
@@ -240,9 +253,12 @@ class WeighWorker(QThread):
         return (float(p.get("aw_low", 0.9)), float(p.get("aw_high", 1.1)))
 
     def _send_send_weight_to_instrument(self, weight_g):
-        from protocol_layer import CommandBuilder
+        from protocol_layer import CommandBuilder, send_cmd_with_uplink_check
         cmd = CommandBuilder.build_send_weight(weight_g)
-        self._serial.send(cmd)
+        send_cmd_with_uplink_check(
+            self._serial, cmd, "发送天平数据",
+            max_duration=10.0,
+        )
 
     def _check_instrument_button(self):
         try:
@@ -264,30 +280,20 @@ class WeighWorker(QThread):
     def _weigh_one_tare(self, row, name):
         position = row
         _log("坩埚称量 row=" + str(row) + " name=" + name + " pos=" + str(position))
-        self.sig_status_msg.emit("正在称量" + str(row) + "号器皿")
-        self._send_move_to(position)
+        label = "校正坩埚" if row == 0 else (str(row) + "号器皿")
+        self.sig_status_msg.emit("正在称量" + label)
+        if position > 0:
+            self._send_move_to(position)
+        else:
+            _log("校正坩埚在固定参考位置，跳过样盘移动")
         self._sleep(CMD_INTERVAL_S)
-        if not self._do_handshake_with_retry():
-            self.sig_error.emit("坩埚称量 row=" + str(row) + " 握手失败，跳过")
-            return
-        self._sleep(WAIT_AFTER_HANDSHAKE_S)
         self._send_cmd(CMD.TARE, desc="天平清零")
         _log("天平清零已发送, 等待 " + str(TARE_SETTLE_S) + "s 让天平稳定...")
         self._sleep(TARE_SETTLE_S)
-        if not self._do_handshake_with_retry():
-            self.sig_error.emit("坩埚称量 row=" + str(row) + " 天平清零后握手失败，跳过")
-            return
         self._send_long_duration_cmd(CMD.SAMPLE_PLATE_DOWN, desc="样盘下降")
-
-        if not self._do_handshake_with_retry():
-            self.sig_error.emit("坩埚称量 row=" + str(row) + " 样盘下降后握手失败，跳过")
-            return
-        weight = self._wait_stable_with_display(STABLE_WAIT_S)
+        weight = self._wait_simple_5s(row, name, "tare")
         weight = round(weight, 4)
         _log("坩埚重量 row=" + str(row) + " weight=" + str(weight))
-        self.sig_weigh_progress.emit({
-            "phase": "tare", "row": row, "name": name, "weight": weight
-        })
         if self._backfill_cb:
             self._backfill_cb(row, TARE_TARGET_COL, weight, "tare")
 
@@ -296,24 +302,16 @@ class WeighWorker(QThread):
         position = row
         _log("样品称量 row=" + str(row) + " name=" + name + " pos=" + str(position))
         self.sig_status_msg.emit("正在称量" + str(row) + "号样品: " + name)
-        self._send_move_to(position)
+        if position > 0:
+            self._send_move_to(position)
+        else:
+            _log("校正坩埚在固定参考位置，跳过样盘移动")
         self._sleep(CMD_INTERVAL_S)
-        if not self._do_handshake_with_retry():
-            self.sig_error.emit("样品称量 row=" + str(row) + " 握手失败，跳过")
-            return
-        self._sleep(WAIT_AFTER_HANDSHAKE_S)
         self._send_cmd(CMD.TARE, desc="天平清零")
         _log("天平清零已发送, 等待 " + str(TARE_SETTLE_S) + "s 让天平稳定...")
         self._sleep(TARE_SETTLE_S)
-        if not self._do_handshake_with_retry():
-            self.sig_error.emit("样品称量 row=" + str(row) + " 天平清零后握手失败，跳过")
-            return
         self._send_long_duration_cmd(CMD.SAMPLE_PLATE_DOWN, desc="样盘下降")
-
-        if not self._do_handshake_with_retry():
-            self.sig_error.emit("样品称量 row=" + str(row) + " 样盘下降后握手失败，跳过")
-            return
-        total_weight = self._wait_stable_with_display(STABLE_WAIT_S)
+        total_weight = self._wait_simple_5s(row, name, "sample")
         total_weight = round(total_weight, 4)
         tare_weight = self._get_tare_weight(row)
         sample_weight = round(total_weight - tare_weight, 4)
@@ -332,84 +330,16 @@ class WeighWorker(QThread):
                               total_weight=total_weight, tare_weight=tare_weight)
 
     # ===== 串口工具方法 =====
-    def _do_handshake_with_retry(self):
-        """握手指令 — 不限次数重试，每次等待上行帧后尝试，60秒超时
-        超时后通过 sig_error 通知 UI 弹出提示框"""
-        from protocol_layer import CommandBuilder, UplinkBuffer
-        import time as _t
-
-        if not self._running:
-            _log("握手取消: 流程已终止")
-            return False
-
-        deadline = _t.time() + 60.0
-        attempt = 0
-
-        while self._running and _t.time() < deadline:
-            attempt += 1
-            # 1. 等待上行帧到达，证明链路正常且设备空闲
-            waited = _t.time()
-            frame_received = False
-            while self._running and (_t.time() - waited) < 3.0:
-                if _t.time() >= deadline:
-                    break
-                try:
-                    raw = self._serial.read_all()
-                except Exception:
-                    raw = b""
-                if raw:
-                    buf = UplinkBuffer()
-                    frames = buf.feed(raw)
-                    if frames:
-                        self._last_uplink_time = _t.time()
-                        self._serial.update_uplink_time()
-                        frame_received = True
-                        _log("握手前收到上行帧 (第" + str(attempt) + "次尝试)")
-                        break
-                self._sleep(0.3)
-
-            # 2. 清空缓冲，发送握手
-            try:
-                self._serial.flush_input()
-            except Exception:
-                pass
-            cmd = CommandBuilder.build_command(CMD.HANDSHAKE)
-            n = self._serial.send(cmd)
-            if n > 0:
-                self._sleep(0.15)
-                try:
-                    resp = self._serial.read_all()
-                except Exception:
-                    resp = b""
-                if resp and b'\x4F\x4B\x01\x45\x4E\x44' in resp:
-                    _log("握手成功 (第" + str(attempt) + "次尝试)")
-                    return True
-
-            remaining = deadline - _t.time()
-            _log("握手未成功 (第" + str(attempt) + "次), 剩余{:.0f}s".format(remaining)
-                 if remaining > 0 else "握手未成功 (第" + str(attempt) + "次), 已超时")
-            if remaining > 0.5:
-                self._sleep(0.5)
-
-        if not self._running:
-            _log("握手取消: 流程已终止 (共尝试" + str(attempt) + "次)")
-            return False
-
-        _log("握手超时(60s), 共尝试" + str(attempt) + "次, 设备无响应")
-        self.sig_error.emit("设备握手超时(1分钟无响应)，请检查:\n"
-                           "1. 仪器是否已开机并联机\n"
-                           "2. 串口线是否连接正常\n"
-                           "3. 可尝试重启程序后重试")
-        return False
-
     def _send_cmd(self, func_code, desc=""):
-        """发送固定4字节指令"""
-        from protocol_layer import CommandBuilder
+        """发送固定4字节指令（带上行检测+重试）"""
+        from protocol_layer import CommandBuilder, send_cmd_with_uplink_check
         cmd = CommandBuilder.build_command(func_code)
         _log("发送指令: " + desc + " code=0x" + format(func_code, "02X") +
              " cmd=" + cmd.hex())
-        n = self._serial.send(cmd)
-        if n == 0:
+        ok = send_cmd_with_uplink_check(
+            self._serial, cmd, desc,
+        )
+        if not ok:
             self.sig_error.emit("指令发送失败: " + desc)
 
     # 机械类指令（不改变炉温，无需温度检测）
@@ -478,13 +408,15 @@ class WeighWorker(QThread):
         return 0.0, None
 
     def _send_move_to(self, position):
-        """移动样盘到指定位"""
-        from protocol_layer import CommandBuilder
+        """移动样盘到指定位（带上行检测+重试）"""
+        from protocol_layer import CommandBuilder, send_cmd_with_uplink_check
         cmd = CommandBuilder.build_move_to(position)
         _log("样盘移动: pos=" + str(position) +
              " cmd=" + cmd.hex())
-        n = self._serial.send(cmd)
-        if n == 0:
+        ok = send_cmd_with_uplink_check(
+            self._serial, cmd, "移动到" + str(position) + "号位",
+        )
+        if not ok:
             self.sig_error.emit("样盘移动指令发送失败 pos=" + str(position))
 
     def _read_uplink_weight(self):
@@ -504,42 +436,44 @@ class WeighWorker(QThread):
         f = frames[-1]
         if f is not None:
             self._serial.update_uplink_time()
-            _log("上行帧: raw=" + f.get("raw_str", "?") +
-                 " 重量={:.4f}g 温度={:.1f}C 联机={} 按键={}".format(
-                 f["weight"], f["temperature"], f["online"], f["btn_pressed"]))
+            raw_str = f.get("raw_str", "?")
+            if not hasattr(self, "_last_uplink_raw") or self._last_uplink_raw != raw_str:
+                _log("上行帧: raw=" + raw_str +
+                     " 重量={:.4f}g 温度={:.1f}C 联机={} 按键={}".format(
+                     f["weight"], f["temperature"], f["online"], f["btn_pressed"]))
+                self._last_uplink_raw = raw_str
         return f["weight"], True
 
-    def _wait_stable_with_display(self, max_wait_s):
-        """等待天平读数稳定 — 真稳定性检测版本
-        - 至少获取 MIN_VALID_READINGS 个有效读数
-        - 连续两次差值 < STABLE_THRESHOLD_G 判定为稳定
-        - max_wait_s 为最大等待上限（超时后若已有读数则用最后值，否则报错）
+    def _wait_simple_5s(self, row, name, phase):
+        """等待5秒持续读取天平重量，实时发送进度到 UI
+        - 每 0.5s 读取一次上行帧重量
+        - 每次读到重量立即 emit sig_weighing_progress（UI 实时刷新重量+名称）
+        - 重量变化时才打日志（避免重复值刷屏）
+        - 5 秒后取最后一个读数返回
         """
         start = time.time()
         readings = []
-        while time.time() - start < max_wait_s:
+        last_logged = None
+        while time.time() - start < STABLE_WAIT_S:
             if not self._running:
                 break
             weight, ok = self._read_uplink_weight()
             if ok:
                 readings.append(weight)
-                self.sig_weight_update.emit(weight)
-                _log("天平读数: {:.4f}g (第{}个, 已耗时{:.1f}s)".format(
-                    weight, len(readings), time.time() - start))
-                if len(readings) >= MIN_VALID_READINGS:
-                    diff = abs(readings[-1] - readings[-2])
-                    if diff < STABLE_THRESHOLD_G:
-                        _log("天平已稳定: {:.4f}g (差值{:.6f}g < {:.6f}g)".format(
-                            weight, diff, STABLE_THRESHOLD_G))
-                        return weight
-            self._sleep(0.15)
-        # 超时处理
+                self.sig_weigh_progress.emit({
+                    "phase": phase, "row": row, "name": name, "weight": weight
+                })
+                if last_logged is None or abs(weight - last_logged) > 0.0001:
+                    _log("天平读数: row={} name={} {:.4f}g (已耗时{:.1f}s)".format(
+                        row, name, weight, time.time() - start))
+                    last_logged = weight
+            self._sleep(0.5)
         if readings:
             last = readings[-1]
-            _log("稳定等待超时({:.1f}s), 共{}个读数, 使用最后值: {:.4f}g".format(
-                max_wait_s, len(readings), last))
+            _log("称量完成 row={} name={} 重量={:.4f}g (共{}个读数)".format(
+                row, name, last, len(readings)))
             return last
-        _log("ERROR: 稳定等待超时({:.1f}s), 无有效天平数据!".format(max_wait_s))
+        _log("ERROR: 5s内无有效天平数据 row={} name={}".format(row, name))
         self.sig_error.emit("天平无数据，请检查仪器联机状态")
         return 0.0
 
@@ -553,6 +487,17 @@ class WeighWorker(QThread):
             except ValueError:
                 pass
         return 0.0
+
+    def _get_crucible_correction_weight(self):
+        """从 DB 读取坩埚校正值，优先分析水校正"""
+        try:
+            from db import load_params
+            p = load_params()
+            aw = float(p.get("aw_corr", 0.0))
+            tw = float(p.get("tw_corr", 0.0))
+            return aw if aw > 0 else tw
+        except Exception:
+            return 0.0
 
     def _sleep(self, secs):
         if secs <= 0:
@@ -591,7 +536,6 @@ class WeighController(QObject):
         self._valid_rows = self._filter_valid(valid_rows)
         self._weigh_phase = "tare"
         _log("start_tare_weigh: valid_rows=" + str(self._valid_rows))
-        self.sig_status_msg.emit("准备称量器皿，正在初始化...")
         self._start_worker("tare")
 
     def show_add_sample_prompt(self):
@@ -601,14 +545,12 @@ class WeighController(QObject):
     def start_sample_weigh(self):
         self._weigh_phase = "sample"
         _log("start_sample_weigh: valid_rows=" + str(self._valid_rows))
-        self.sig_status_msg.emit("准备称量样品，正在初始化...")
         self._start_worker("sample")
 
     def start_single_sample_weigh(self, valid_rows):
         self._valid_rows = self._filter_valid(valid_rows)
         self._weigh_phase = "single_sample"
         _log("start_single_sample_weigh: valid_rows=" + str(self._valid_rows))
-        self.sig_status_msg.emit("准备称量样品，正在初始化...")
         self._start_worker("single_sample")
 
     def confirm_current_weigh(self):

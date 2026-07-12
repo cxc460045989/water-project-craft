@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """协议解析与指令封装层 — 水分测定仪串口通讯协议
 依赖: serial_comm.py（SerialManager）
 框架: PySide2 (Qt5) — 兼容 Windows 7 / 麒麟Linux x86/ARM64
@@ -7,15 +7,18 @@
   - 只负责协议解析与指令组包，不参与业务逻辑
   - 上行解析独立无状态，下行指令纯函数构造
   - 粘包/半包由 UplinkBuffer 状态机处理
-  - 握手流程封装为单独函数
+  - 指令发送统一走 send_cmd_with_uplink_check()，不上行检测通过即发，失败自动重试
 
 用法:
-    from protocol_layer import CommandBuilder, FrameParser, UplinkBuffer, handshake
-    cmd = CommandBuilder.build_command(CommandBuilder.CMD_HANDSHAKE)
+    from protocol_layer import CommandBuilder, FrameParser, UplinkBuffer, send_cmd_with_uplink_check
+    cmd = CommandBuilder.build_command(CommandBuilder.CMD_TARE)
     parsed = FrameParser.parse_uplink(b"S0850301001701END")
+
+注意: 握手指令(HANDSHAKE)已废弃，不得在新代码中使用。
 """
 
 import time
+from logging_util import logger
 
 
 # ============================================================
@@ -23,7 +26,7 @@ import time
 # ============================================================
 class CMD:
     """指令功能码常量 — 5A 4D <func_code> 44"""
-    HANDSHAKE = 0x01          # 握手
+    HANDSHAKE = 0x01          # 握手 [已废弃 - 不得在新代码中使用]
     BEEPER_1S = 0x07          # 蜂鸣器响1秒
     SAMPLE_PLATE_ROTATE = 0x13   # 样盘不停转动
     SAMPLE_PLATE_UP = 0x14    # 样盘上升到高位
@@ -231,73 +234,122 @@ class UplinkBuffer:
 
 
 # ============================================================
-# Handshaker — 握手流程封装
+# send_cmd_with_uplink_check — 统一指令发送（上行检测 → 发指令 → 等返回值）
 # ============================================================
-def handshake(serial_mgr, retries=3, wait_ms=80, last_uplink_time=None, timeout=3.0):
-    """执行握手指令流程，含上行链路预检和设备忙容错
+def send_cmd_with_uplink_check(serial_mgr, cmd_bytes, desc="",
+                                max_duration=60.0, response_timeout=1.0):
+    """检测上行数据 → 发送指令 → 等待返回值，失败重试
 
-    步骤:
-        1. 若 last_uplink_time 不为 None，检查是否超过 timeout 秒无上行帧
-        2. 清空串口接收缓冲区
-        3. 发送 5A 4D 01 44
-        4. 等待 wait_ms 毫秒
-        5. 读取回复，判断是否为 4F 4B 01 45 4E 44 握手响应帧
-        6. 失败重试，最多 retries 次
-        7. 若 last_uplink_time 正常（上行帧持续到来）但握手始终无响应，
-           判定为设备忙而非链路断开
+    新协议：不用握手指令。
+    完整流程:
+        1. 检测是否有上行数据（仪器在发上行帧）
+        2. 检测到后，发指令
+        3. 等待返回值（新上行帧 = 指令送达的确认），最多等 response_timeout 秒
+        4. 拿到返回值 → 成功
+        5. 超时未拿到 → 回到步骤 1 重试
+        6. 整个过程超过 max_duration 秒 → 报错提示检查仪器/串口线/程序
+
+    指令发送成功后计数器归零（每条指令独立）。
 
     参数:
         serial_mgr: SerialManager 实例
-        retries: 最大重试次数
-        wait_ms: 每次握手等待时间(ms)
-        last_uplink_time: 最近一次收到上行帧的时间戳(time.time())，None 表示跳过预检
-        timeout: 上行帧超时阈值(秒)，超过此时间无帧则判链路断开
+        cmd_bytes: 要发送的指令字节
+        desc: 指令描述（用于日志和错误提示）
+        max_duration: 整个过程最长耗时(秒)，默认 60
+        response_timeout: 发指令后等待返回值超时(秒)，默认 1.0
 
     返回:
-        True  — 握手成功
-        False — 握手失败(链路断开或设备忙)
+        True  — 指令发送成功（拿到上行帧返回值）
+        False — 指令发送失败（超过 max_duration 秒）
     侧效应:
         通过 serial_mgr.error_occurred.emit() 发出详细错误信息
     """
     import time as _time
 
-    # 上行链路预检
-    if last_uplink_time is not None:
-        elapsed = _time.time() - last_uplink_time
-        if elapsed > timeout:
-            msg = "上行帧已 %.1f 秒无数据，判定通信链路断开" % elapsed
-            serial_mgr.error_occurred.emit(msg)
-            return False
+    deadline = _time.time() + max_duration
 
-    for attempt in range(1, retries + 1):
-        # 清接收缓冲区
-        serial_mgr.flush_input()
+    while _time.time() < deadline:
+        # ===== 步骤1: 检测上行数据 =====
+        frame_detected = False
+        while _time.time() < deadline:
+            try:
+                raw = serial_mgr.read_all()
+            except Exception:
+                raw = b""
+            if raw:
+                buf = UplinkBuffer()
+                frames = buf.feed(raw)
+                if frames:
+                    serial_mgr.update_uplink_time()
+                    frame_detected = True
+                    break
+            _time.sleep(0.1)
 
-        # 发送握手
-        cmd = CommandBuilder.build_command(CMD.HANDSHAKE)
-        n = serial_mgr.send(cmd)
-        if n == 0:
-            _time.sleep(wait_ms / 1000.0)
-            continue
+        if not frame_detected:
+            # 超过截止时间仍无上行数据
+            break
 
-        # 等待仪器响应
-        _time.sleep(wait_ms / 1000.0)
-
-        # 读取回复
+        # ===== 步骤2: 发送指令 =====
         try:
-            resp = serial_mgr.read_all()
+            serial_mgr.flush_input()
         except Exception:
-            resp = b""
+            pass
+        n = serial_mgr.send(cmd_bytes)
+        if n == 0:
+            # 发送失败，回到步骤1重试
+            logger.warning("[CMD] 发送失败(%s)，准备重试", desc)
+            _time.sleep(0.1)
+            continue
+        logger.info("[CMD] 已发送: %s | %s", desc, cmd_bytes.hex())
 
-        # 新协议：握手成功响应帧为 4F 4B 01 45 4E 44
-        if resp and b'\x4F\x4B\x01\x45\x4E\x44' in resp:
+        # ===== 步骤3: 等待返回值（上行帧确认）=====
+        resp_start = _time.time()
+        resp_received = False
+        while (_time.time() - resp_start) < response_timeout:
+            if _time.time() >= deadline:
+                break
+            try:
+                raw = serial_mgr.read_all()
+            except Exception:
+                raw = b""
+            if raw:
+                buf = UplinkBuffer()
+                frames = buf.feed(raw)
+                if frames:
+                    serial_mgr.update_uplink_time()
+                    resp_received = True
+                    break
+            _time.sleep(0.1)
+
+        if resp_received:
+            # 拿到返回值，成功
+            logger.info("[CMD] 发送成功，收到响应: %s", desc)
             return True
 
-        # 若 last_uplink_time 有效且上行帧仍在到来，判定为设备忙，不递减重试次数
-        if last_uplink_time is not None:
-            elapsed = _time.time() - last_uplink_time
-            if elapsed <= timeout:
-                # 设备忙：继续重试，不计入上限
-                continue
+        # 未拿到返回值，回到步骤1重试
+        logger.warning("[CMD] 等待响应超时(%.1fs)，重新发送: %s", response_timeout, desc)
 
-    
+    # ===== 超过 max_duration 秒 =====
+    msg = ("指令发送失败(%s)，已超过%d秒，"
+           "请检查:\n"
+           "1. 仪器是否已开机并联机\n"
+           "2. 串口线是否连接正常\n"
+           "3. 可尝试重启程序后重试") % (desc, int(max_duration))
+    serial_mgr.error_occurred.emit(msg)
+    return False
+
+
+# ============================================================
+# handshake — [已废弃] 保留仅用于向后兼容老旧测试代码
+# ============================================================
+def handshake(serial_mgr, retries=3, wait_ms=80, last_uplink_time=None, timeout=3.0):
+    """[已废弃] 请使用 send_cmd_with_uplink_check 代替
+
+    保留此函数仅为避免旧测试代码报错。
+    内部已重定向到 send_cmd_with_uplink_check。
+    """
+    cmd = CommandBuilder.build_command(CMD.HANDSHAKE)
+    return send_cmd_with_uplink_check(
+        serial_mgr, cmd, desc="握手(兼容)",
+        max_duration=timeout,
+    )

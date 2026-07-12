@@ -265,21 +265,14 @@ class HardwareCheckDialog(QDialog):
             logger.info("[HARDWARE][" + (self._mgr.port_name if self._mgr else "?") + "] " + label + " 失败: 串口未连接")
             self._status.setText("串口未连接")
             return
-        from protocol_layer import CommandBuilder, handshake, CMD
+        from protocol_layer import CommandBuilder, CMD
         if isinstance(func_code_or_bytes, bytes):
             cmd = func_code_or_bytes
         else:
             cmd = CommandBuilder.build_command(func_code_or_bytes)
         self._status.setText(label + " ...")
-        if func_code_or_bytes != CMD.HANDSHAKE:
-            if not handshake(self._mgr, retries=10,
-                             last_uplink_time=self._mgr.last_uplink_time if self._mgr else None):
-                logger.info("[HARDWARE][" + (self._mgr.port_name if self._mgr else "?") + "] " + label + " 失败: 握手无响应")
-                self._status.setText(label + " 失败: 握手无响应")
-                return
-        self._mgr.flush_input()
-        from PySide2.QtCore import QTimer
-        QTimer.singleShot(100, lambda: self._do_send(cmd, label))
+        # 硬件检测为手动测试场景，直接发送不重试（避免机械指令被重复执行）
+        self._do_send(cmd, label)
 
 
     def _on_checkbox_toggled(self, state, label, on_code, off_code):
@@ -300,25 +293,24 @@ class HardwareCheckDialog(QDialog):
                     sender.blockSignals(False)
                 return
             temp_val = dlg.intValue()
-            from protocol_layer import CommandBuilder, handshake, CMD
+            from protocol_layer import CommandBuilder, CMD
             cmd = CommandBuilder.build_temp_control(temp_val)
             self._status.setText(label + " 开 ...")
-            if not handshake(self._mgr):
-                logger.info("[HARDWARE][" + (self._mgr.port_name if self._mgr else "?") + "] " + label + " 开 失败: 握手无响应")
-                self._status.setText(label + " 开 失败: 握手无响应")
-                return
-            from PySide2.QtCore import QTimer
-            QTimer.singleShot(100, lambda: self._do_send(cmd, label + " 开 " + str(temp_val) + "℃"))
+            self._do_send(cmd, label + " 开 " + str(temp_val) + "℃")
             return
         func_code = on_code if state else off_code
         self.send_command(label + (" 开" if state else " 关"), func_code)
 
     def _do_send(self, cmd, label):
-        """实际发送指令（QTimer.singleShot 延迟后调用，不阻塞主线程）"""
+        """直接发送指令，不重试（硬件检测场景每次点击只应执行一次）"""
         if not self._mgr or not self._mgr.is_connected:
             return
+        try:
+            self._mgr.flush_input()
+        except Exception:
+            pass
         n = self._mgr.send(cmd)
-        if n == len(cmd):
+        if n > 0:
             logger.info("[HARDWARE][" + (self._mgr.port_name if self._mgr else "?") + "] " + label + " 已发送")
             self._status.setText(label + " 已发送")
         else:

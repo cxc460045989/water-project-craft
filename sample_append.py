@@ -12,7 +12,6 @@ from logging_util import logger
 
 CMD_INTERVAL_S = 0.15
 STABLE_WAIT_S = 5.0
-HANDSHAKE_RETRIES = 30
 UPLINK_TIMEOUT_S = 3.0
 WEIGHT_REPORT_INTERVAL_S = 1.0
 
@@ -100,14 +99,11 @@ class SampleAppendWorker(QObject):
         _log("[步骤1] 样盘移动到%d号位" % self._position)
         cmd = CommandBuilder.build_move_to(self._position)
         self._log_send("样盘移动", cmd)
-        self._send_with_handshake(cmd, callback=self._start_wait_handshake_1)
+        self._send_cmd_with_uplink_check(cmd, "样盘移动", callback=self._step2_after_ready)
 
     def _start_wait_handshake_1(self):
-        self.sig_status_update.emit("步骤1: 等待样盘就位...")
-        _log("[步骤1] 等待样盘就位(持续握手)")
-        self._step_timer_type = "wait_handshake"
-        self._step_timer_target = self._step2_after_ready
-        self._step_timer.start(200)
+        # [已废弃] 新协议不需要握手等待，直接进入下一步
+        self._step2_after_ready()
 
     def _step2_after_ready(self):
         self.sig_status_update.emit("步骤2: 就绪等待2s...")
@@ -123,19 +119,18 @@ class SampleAppendWorker(QObject):
     def _step3_tare_prepare(self):
         self.sig_status_update.emit("步骤3: 天平清零...")
         _log("[步骤3] 天平清零")
-        self._send_cmd_with_handshake(CMD.TARE, callback=self._step3_tare_down)
+        cmd = CommandBuilder.build_command(CMD.TARE)
+        self._send_cmd_with_uplink_check(cmd, "天平清零", callback=self._step3_tare_down)
 
     def _step3_tare_down(self):
         self.sig_status_update.emit("步骤3: 样盘下降...")
         _log("[步骤3] 样盘下降")
-        self._send_cmd_with_handshake(CMD.SAMPLE_PLATE_DOWN, callback=self._start_wait_handshake_3)
+        cmd = CommandBuilder.build_command(CMD.SAMPLE_PLATE_DOWN)
+        self._send_cmd_with_uplink_check(cmd, "样盘下降", callback=self._start_wait_handshake_3)
 
     def _start_wait_handshake_3(self):
-        self.sig_status_update.emit("步骤3: 等待样盘下降到位...")
-        _log("[步骤3] 等待样盘下降(持续握手)")
-        self._step_timer_type = "wait_handshake"
-        self._step_timer_target = self._step3_tare_stable
-        self._step_timer.start(200)
+        # [已废弃] 新协议不需要握手等待，直接进入下一步
+        self._step3_tare_stable()
 
     def _step3_tare_stable(self):
         self.sig_status_update.emit("步骤3: 等待器皿重量稳定5s...")
@@ -161,13 +156,16 @@ class SampleAppendWorker(QObject):
     def _step5_sample_prompt(self):
         self.sig_status_update.emit("步骤5: 请添加样品, 开始称量")
         _log("[步骤5] 进入样品称量")
-        self._send_cmd_with_handshake(CMD.ENTER_WEIGH_MODE, callback=self._step5_tare2)
+        cmd = CommandBuilder.build_command(CMD.ENTER_WEIGH_MODE)
+        self._send_cmd_with_uplink_check(cmd, "进入称量样重状态", callback=self._step5_tare2)
 
     def _step5_tare2(self):
-        self._send_cmd_with_handshake(CMD.TARE, callback=self._step5_beeper)
+        cmd = CommandBuilder.build_command(CMD.TARE)
+        self._send_cmd_with_uplink_check(cmd, "天平清零", callback=self._step5_beeper)
 
     def _step5_beeper(self):
-        self._send_cmd_with_handshake(CMD.BEEPER_1S, callback=self._step5_start_weighing)
+        cmd = CommandBuilder.build_command(CMD.BEEPER_1S)
+        self._send_cmd_with_uplink_check(cmd, "蜂鸣提示", callback=self._step5_start_weighing)
 
     def _step5_start_weighing(self):
         self.sig_status_update.emit("步骤5: 实时称量中...")
@@ -187,7 +185,7 @@ class SampleAppendWorker(QObject):
         self.sig_sample_weight_update.emit(sample_weight)
         cmd = CommandBuilder.build_send_weight(sample_weight)
         self._log_send("发送天平数据(%.4fg)" % sample_weight, cmd)
-        self._send_with_handshake(cmd)
+        self._send_cmd_with_uplink_check(cmd, "发送天平数据(%.4fg)" % sample_weight)
 
     def _step_timer_weigh_check(self):
         """检测称量结束条件"""
@@ -231,12 +229,14 @@ class SampleAppendWorker(QObject):
     def _step6_finish(self):
         self.sig_status_update.emit("步骤6: 样盘上升...")
         _log("[步骤6] 样盘上升")
-        self._send_cmd_with_handshake(CMD.SAMPLE_PLATE_UP, callback=self._step6_exit_weigh)
+        cmd = CommandBuilder.build_command(CMD.SAMPLE_PLATE_UP)
+        self._send_cmd_with_uplink_check(cmd, "样盘上升", callback=self._step6_exit_weigh)
 
     def _step6_exit_weigh(self):
         self.sig_status_update.emit("步骤6: 解除称重状态...")
         _log("[步骤6] 解除称重")
-        self._send_cmd_with_handshake(CMD.EXIT_WEIGH_MODE, callback=self._step6_done)
+        cmd = CommandBuilder.build_command(CMD.EXIT_WEIGH_MODE)
+        self._send_cmd_with_uplink_check(cmd, "解除称重状态", callback=self._step6_done)
 
     def _step6_done(self):
         self._running = False
@@ -254,19 +254,10 @@ class SampleAppendWorker(QObject):
             self._step_timer.stop()
             return
         ttype = getattr(self, "_step_timer_type", "")
-        if ttype == "wait_handshake":
-            self._timer_try_handshake()
-        elif ttype == "delay":
+        if ttype == "delay":
             self._timer_delay_tick()
         elif ttype == "weigh_check":
             self._step_timer_weigh_check()
-
-    def _start_wait_handshake(self, target_cb):
-        """启动握手等待定时器(持续握手直到OK)"""
-        self._step_timer_type = "wait_handshake"
-        self._step_timer_target = target_cb
-        self._step_timer_retry = 0
-        self._step_timer.start(200)
 
     def _start_timer(self, ms, target_cb):
         """启动延迟定时器"""
@@ -275,38 +266,6 @@ class SampleAppendWorker(QObject):
         self._step_timer_count = 0
         self._step_timer_max = max(1, ms // 200)
         self._step_timer.start(200)
-
-    def _timer_try_handshake(self):
-        """握手等待定时器tick: 每200ms尝试一次握手"""
-        if not self._running:
-            self._step_timer.stop()
-            return
-        # 检查上行帧超时
-        elapsed = time.time() - self._last_uplink_time
-        if elapsed > UPLINK_TIMEOUT_S:
-            self._step_timer_retry += 1
-            if self._step_timer_retry > HANDSHAKE_RETRIES:
-                _log("[握手] 上行帧超时+握手失败, 通信异常")
-                self.sig_error.emit("通信异常: 上行帧%.1fs无数据" % elapsed)
-                self.stop()
-                return
-        else:
-            self._step_timer_retry = 0
-        # 执行握手
-        self._serial.flush_input()
-        cmd = CommandBuilder.build_command(CMD.HANDSHAKE)
-        self._log_send("握手", cmd)
-        self._serial.send(cmd)
-        time.sleep(0.08)
-        resp = self._serial.read_all()
-        if resp and b'\x4F\x4B\x01\x45\x4E\x44' in resp:
-            _log("[握手] OK, 继续下一步")
-            self._step_timer.stop()
-            target = getattr(self, "_step_timer_target", None)
-            if target:
-                target()
-        else:
-            _log("[握手] 无响应(设备忙), 重试")
 
     def _timer_delay_tick(self):
         """延迟定时器tick"""
@@ -319,34 +278,18 @@ class SampleAppendWorker(QObject):
 
     # ===== 串口工具 =====
 
-    def _send_with_handshake(self, cmd_bytes, desc="", callback=None):
-        """握手后发送指令(握手OK后在IO线程继续)"""
-        self._handshake_pending_cmd = cmd_bytes
-        self._handshake_pending_desc = desc
-        self._handshake_pending_cb = callback
-        self._start_wait_handshake(self._handshake_send)
-
-    def _send_cmd_with_handshake(self, func_code, desc="", callback=None):
-        """固定4字节指令握手后发送"""
-        cmd = CommandBuilder.build_command(func_code)
-        self._handshake_pending_cmd = cmd
-        self._handshake_pending_desc = desc
-        self._handshake_pending_cb = callback
-        self._start_wait_handshake(self._handshake_send)
-
-    def _handshake_send(self):
-        """握手成功后发送目标指令"""
-        cmd = getattr(self, "_handshake_pending_cmd", b"")
-        desc = getattr(self, "_handshake_pending_desc", "")
-        cb = getattr(self, "_handshake_pending_cb", None)
-        if not cmd:
+    def _send_cmd_with_uplink_check(self, cmd_bytes, desc="", callback=None):
+        """检测上行活跃后发送指令(统一入口, 去握手)"""
+        if not self._running:
             return
-        self._serial.flush_input()
-        n = self._serial.send(cmd)
-        if n > 0:
-            self._log_send(desc, cmd)
-        if cb:
-            cb()
+        from protocol_layer import send_cmd_with_uplink_check
+        ok = send_cmd_with_uplink_check(
+            self._serial, cmd_bytes, desc,
+        )
+        if ok:
+            self._log_send(desc, cmd_bytes)
+        if callback:
+            callback()
 
     def _safe_send_cmd(self, func_code, desc=""):
         """不经握手直接发送(紧急复位)"""
