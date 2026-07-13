@@ -193,7 +193,7 @@ class WeighDialog(QDialog):
         self.weight_label.setText("{:.4f}g".format(weight))
 
     def show_single_out_of_range(self, name, weight, lo, hi):
-        """重量超限提示"""
+        """重量超限提示（批量模式用，切换界面）"""
         self._phase = "out_of_range"
         self.btn_confirm.setVisible(False)
         self.btn_cancel.setVisible(True)
@@ -201,6 +201,15 @@ class WeighDialog(QDialog):
         self.title_label.setText("样品重量超出范围")
         self.sub_label.setText("样重超出范围（{:.4f}-{:.4f}g）！".format(lo, hi))
         self.weight_label.setText("将重新称量该样品")
+
+    def show_individual_range_warning(self, lo, hi):
+        """单独称量超限提示：保持称重界面，仅更新副标题"""
+        self._phase = "individual_waiting"
+        self.btn_confirm.setVisible(True)
+        self.btn_confirm.setEnabled(True)
+        self.btn_cancel.setVisible(True)
+        self.btn_cancel.setEnabled(True)
+        self.sub_label.setText("样重超出范围（{:.4f}-{:.4f}g）！".format(lo, hi))
 
     def update_real_time_weight(self, weight):
         """刷新实时重量显示"""

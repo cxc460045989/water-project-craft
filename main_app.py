@@ -1221,7 +1221,7 @@ class MoistureAnalyzer(QMainWindow):
                     dlg.show_single_weigh_done(row, weight)
 
                 def on_weight_out_of_range_individual(name, weight, lo, hi):
-                    dlg.show_single_out_of_range(name, weight, lo, hi)
+                    dlg.show_individual_range_warning(lo, hi)
 
                 ctrl.sig_weighing_progress.connect(on_weigh_progress_individual)
                 ctrl.sig_weighing_done.connect(on_weigh_done_individual)

@@ -131,13 +131,21 @@ class WeighWorker(QThread):
             if item and item.text().strip():
                 corr_name = item.text().strip()
         if self._running:
-            self._weigh_one_tare(0, corr_name)
+            existing_tare = self._get_tare_weight(0)
+            if existing_tare > 0:
+                _log("1号坩埚已有重量 {:.4f}g，跳过称量".format(existing_tare))
+            else:
+                self._weigh_one_tare(0, corr_name)
 
         # 称量其余样品（row 1+）
         for row, name, mode in self._valid_rows:
             if not self._running:
                 return
             if not name.strip():
+                continue
+            existing_tare = self._get_tare_weight(row)
+            if existing_tare > 0:
+                _log(name + " 坩埚已有重量 {:.4f}g，跳过称量".format(existing_tare))
                 continue
             self._weigh_one_tare(row, name)
         _log("批量坩埚称量完成")
@@ -248,7 +256,7 @@ class WeighWorker(QThread):
     def _individual_sample(self):
         """单独称重模式: 逐个样位称量样品，UI按钮确认
         样位从2号开始(跳过1号校正坩埚)
-        流程: 移样位→延时1s→去皮→样盘下降→等待确认→超标判断
+        流程: 移样位→延时1s→去皮→(样盘下降→等待确认→超标判断)*重试
         """
         individual_rows = [(r, n, m) for r, n, m in self._valid_rows if r > 0]
         _log("单独称量样品开始, 有效样品 " + str(len(individual_rows)) + " 个")
@@ -268,6 +276,8 @@ class WeighWorker(QThread):
             # 步骤3: 天平清零(去皮)
             self._send_cmd(CMD.TARE, desc="天平清零")
             _log("天平清零已发送")
+            # 提前获取坩埚重，用于实时显示净重
+            tare_weight = self._get_tare_weight(row)
 
             while self._running:
                 # 步骤4: 样盘下降 → 进入称重就绪
@@ -280,26 +290,30 @@ class WeighWorker(QThread):
                     self._sleep(0.1)
                 _log("样盘下降完成, 等待确认...")
 
-                # 步骤5: 等待UI确认(持续刷新天平读数, 样重=天平读数)
-                weight = self._wait_ui_confirm_with_display(row, name)
+                # 步骤5: 等待UI确认(持续刷新净重显示)
+                weight = self._wait_ui_confirm_with_display(row, name, tare_weight)
                 if not self._running:
                     return
 
-                # 步骤6: 样重超标判断
-                sample_weight = round(weight, 4)
+                # 步骤6: 计算样品净重 = 天平读数 - 坩埚重
+                sample_weight = round(weight - tare_weight, 4)
+                _log("单独称量 row=" + str(row) +
+                     " 总重=" + str(weight) +
+                     " 坩埚重=" + str(tare_weight) +
+                     " 样重=" + str(sample_weight))
                 lo, hi = self._get_weight_range_for_mode(mode)
                 if sample_weight < lo or sample_weight > hi:
                     self.sig_weight_out_of_range.emit(name, sample_weight, lo, hi)
                     _log("重量超限 row=" + str(row) + " weight=" + str(sample_weight) +
                          " range=[" + str(lo) + "," + str(hi) + "] 重新称量")
-                    self._sleep(3.0)  # 留时间让UI显示超限提示
                     continue  # 回到步骤4(样盘下降)
 
                 # 合格: 保存数据
                 self.sig_single_weigh_done.emit(row, sample_weight)
                 _log("单独称量完成 row=" + str(row) + " weight=" + str(sample_weight))
                 if self._backfill_cb:
-                    self._backfill_cb(row, SAMPLE_TARGET_COL, sample_weight, "sample")
+                    self._backfill_cb(row, SAMPLE_TARGET_COL, sample_weight, "sample",
+                                      total_weight=weight, tare_weight=tare_weight)
                 break  # 进入下一个样位
 
         _log("单独称量全部完成")
@@ -308,9 +322,11 @@ class WeighWorker(QThread):
         self._send_cmd(CMD.BEEPER_1S, desc="蜂鸣提示")
         self.sig_weigh_done.emit("sample")
 
-    def _wait_ui_confirm_with_display(self, row, name):
+    def _wait_ui_confirm_with_display(self, row, name, tare_weight=0.0):
         """等待UI确认按钮，期间持续刷新天平读数显示
-        返回: 确认时显示的天平读数(g)
+        参数:
+            tare_weight: 坩埚重量(g)，用于显示净重
+        返回: 确认时的天平原始读数(g)
         """
         import threading
         self._confirm_event = threading.Event()
@@ -326,13 +342,14 @@ class WeighWorker(QThread):
             weight, ok = self._read_uplink_weight()
             if ok:
                 last_weight = round(weight, 4)
-                self.sig_real_time_sample_weight.emit(last_weight)
+                net_weight = round(last_weight - tare_weight, 4)
+                self.sig_real_time_sample_weight.emit(net_weight)
                 self.sig_weigh_progress.emit({
                     "phase": "individual", "row": row, "name": name,
-                    "weight": last_weight
+                    "weight": net_weight
                 })
                 # 发送样品净重到仪器（发后不管，不等响应）
-                self._send_weight_fire_and_forget(last_weight)
+                self._send_weight_fire_and_forget(net_weight)
                 # 检测仪器按键按下 → 自动确认
                 if self._last_btn_pressed:
                     self._confirm_event.set()

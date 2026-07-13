@@ -37,6 +37,11 @@ class MockInstrumentSimulator:
         self._lid_open = False
         self._moisture_testing = False
 
+        # 模拟称重数据
+        self._crucible_weights = {}   # {position: weight_g} 每个样位的坩埚重
+        self._sample_weights = {}     # {position: sample_weight_g}
+        self._in_sample_phase = False  # True=炉盖已开，进入样品称量阶段
+
         # 上行帧缓存（供 SimSerialAdapter 读取）
         self._uplink_buf = bytearray()
         self._resp_buf = bytearray()
@@ -139,8 +144,22 @@ class MockInstrumentSimulator:
             self._beeper_on = False
         elif fc == CMD.SAMPLE_PLATE_UP:
             self._plate_pos = 1
+            self._weight = 0.0
+            self._tare_offset = 0.0
+            self._in_sample_phase = False
         elif fc == CMD.SAMPLE_PLATE_DOWN:
             self._plate_pos = 0
+            # 获取当前样位的坩埚重量(按样位确定，保证每次一致)
+            if self._position not in self._crucible_weights:
+                self._crucible_weights[self._position] = round(18.5 + self._position * 0.25, 4)
+            base = self._crucible_weights[self._position]
+            # 样品称量阶段: 天平读数 = 坩埚 + 样品
+            if self._in_sample_phase:
+                if self._position not in self._sample_weights:
+                    self._sample_weights[self._position] = round(0.95 + self._position * 0.005, 4)
+                self._weight = base + self._sample_weights[self._position]
+            else:
+                self._weight = base
         elif fc == CMD.TARE:
             self._tare_offset = 0.0
             self._weight = 0.0
@@ -150,6 +169,7 @@ class MockInstrumentSimulator:
             self._lid_open = False
         elif fc == CMD.OPEN_LID:
             self._lid_open = True
+            self._in_sample_phase = True
         elif fc == CMD.ENTER_WEIGH_MODE:
             self._weigh_mode = True
         elif fc == CMD.EXIT_WEIGH_MODE:
