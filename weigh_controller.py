@@ -510,8 +510,9 @@ class WeighWorker(QThread):
         # 机械类指令
         if func_code in self._MECHANICAL_CMDS:
             if func_code in self._LID_CMDS:
-                # 炉盖指令：逐秒倒计时显示(mock模式跳过无效等待)
-                wait_s = LID_WAIT_S
+                # 炉盖指令：逐秒倒计时显示
+                is_mock = getattr(self._serial._serial, 'port', '') == 'MOCK'
+                wait_s = 3.0 if is_mock else LID_WAIT_S
                 for remaining in range(int(wait_s), 0, -1):
                     if not self._running:
                         return

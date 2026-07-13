@@ -335,8 +335,9 @@ class SimSerialAdapter:
         with self._lock:
             self._read_buf.clear()
             self._handshake_resp.clear()
-            self._sim._uplink_buf.clear()
-            self._sim._resp_buf.clear()
+            # 不清空 _uplink_buf / _resp_buf：模拟器数据是有效上行帧，
+            # 不是真实串口的残留垃圾。清空会导致 send_cmd_with_uplink_check
+            # 永远等不到响应，陷入无限重试死循环。
 
     def reset_output_buffer(self):
         self._read_buf.clear()
