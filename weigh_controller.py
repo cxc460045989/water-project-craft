@@ -73,6 +73,12 @@ class WeighWorker(QThread):
         self._running = True
         self.start()
 
+    def run_individual_sample(self, valid_rows):
+        self._valid_rows = list(valid_rows)
+        self._cur_phase = "individual_sample"
+        self._running = True
+        self.start()
+
     def stop(self):
         self._running = False
         if self._confirm_event:
@@ -89,6 +95,8 @@ class WeighWorker(QThread):
                 self._batch_sample()
             elif self._cur_phase == "single_sample":
                 self._single_sample()
+            elif self._cur_phase == "individual_sample":
+                self._individual_sample()
         except Exception as e:
             self.sig_error.emit("称量异常: " + str(e))
             import traceback
@@ -231,6 +239,96 @@ class WeighWorker(QThread):
         self._send_long_duration_cmd(CMD.SAMPLE_PLATE_UP, desc="样盘上升")
         self._send_cmd(CMD.EXIT_WEIGH_MODE, desc="解除称重状态")
         self.sig_weigh_done.emit("sample")
+
+    # ===== 单独称样品(仪器按键确认模式) =====
+    def _individual_sample(self):
+        """单独称重模式: 逐个样位称量样品，UI按钮确认
+        样位从2号开始(跳过1号校正坩埚)
+        流程: 移样位→延时1s→去皮→样盘下降→等待确认→超标判断
+        """
+        individual_rows = [(r, n, m) for r, n, m in self._valid_rows if r > 0]
+        _log("单独称量样品开始, 有效样品 " + str(len(individual_rows)) + " 个")
+
+        for row, name, mode in individual_rows:
+            if not self._running:
+                return
+            position = row + 1
+            _log("单独称量 row=" + str(row) + " name=" + name + " pos=" + str(position))
+
+            # 步骤1: 移动到指定位
+            self.sig_weigh_progress.emit({"phase": "individual", "row": row, "name": name, "weight": 0.0})
+            self._send_move_to(position)
+            self._sleep(CMD_INTERVAL_S)
+            # 步骤2: 延时1s等待机械稳定
+            self._sleep(1.0)
+            # 步骤3: 天平清零(去皮)
+            self._send_cmd(CMD.TARE, desc="天平清零")
+            _log("天平清零已发送")
+
+            while self._running:
+                # 步骤4: 样盘下降 → 进入称重就绪
+                self._send_cmd(CMD.SAMPLE_PLATE_DOWN, desc="样盘下降")
+                _t0 = time.time()
+                while self._running and (time.time() - _t0) < 15.0:
+                    _, ok = self._read_uplink_weight()
+                    if ok:
+                        break
+                    self._sleep(0.1)
+                _log("样盘下降完成, 等待确认...")
+
+                # 步骤5: 等待UI确认(持续刷新天平读数, 样重=天平读数)
+                weight = self._wait_ui_confirm_with_display(row, name)
+                if not self._running:
+                    return
+
+                # 步骤6: 样重超标判断
+                sample_weight = round(weight, 4)
+                lo, hi = self._get_weight_range_for_mode(mode)
+                if sample_weight < lo or sample_weight > hi:
+                    self.sig_weight_out_of_range.emit(name, sample_weight, lo, hi)
+                    _log("重量超限 row=" + str(row) + " weight=" + str(sample_weight) +
+                         " range=[" + str(lo) + "," + str(hi) + "] 重新称量")
+                    self._sleep(3.0)  # 留时间让UI显示超限提示
+                    continue  # 回到步骤4(样盘下降)
+
+                # 合格: 保存数据
+                self.sig_single_weigh_done.emit(row, sample_weight)
+                _log("单独称量完成 row=" + str(row) + " weight=" + str(sample_weight))
+                if self._backfill_cb:
+                    self._backfill_cb(row, SAMPLE_TARGET_COL, sample_weight, "sample")
+                break  # 进入下一个样位
+
+        _log("单独称量全部完成")
+        self.sig_status_msg.emit("正在上升样盘...")
+        self._send_long_duration_cmd(CMD.SAMPLE_PLATE_UP, desc="样盘上升")
+        self._send_cmd(CMD.BEEPER_1S, desc="蜂鸣提示")
+        self.sig_weigh_done.emit("sample")
+
+    def _wait_ui_confirm_with_display(self, row, name):
+        """等待UI确认按钮，期间持续刷新天平读数显示
+        返回: 确认时显示的天平读数(g)
+        """
+        import threading
+        self._confirm_event = threading.Event()
+        # 通知UI进入确认等待状态
+        self.sig_confirm_weigh.emit(row, name, 0.0)
+        start = time.time()
+        timeout = 300.0
+        last_weight = 0.0
+        while self._running and not self._confirm_event.is_set():
+            if time.time() - start > timeout:
+                self.sig_error.emit("等待确认超时(5分钟)")
+                return 0.0
+            weight, ok = self._read_uplink_weight()
+            if ok:
+                last_weight = round(weight, 4)
+                self.sig_real_time_sample_weight.emit(last_weight)
+                self.sig_weigh_progress.emit({
+                    "phase": "individual", "row": row, "name": name,
+                    "weight": last_weight
+                })
+            self._sleep(0.3)
+        return last_weight
 
     def _wait_confirm_with_display(self, tare_weight):
         import threading
@@ -412,7 +510,7 @@ class WeighWorker(QThread):
         # 机械类指令
         if func_code in self._MECHANICAL_CMDS:
             if func_code in self._LID_CMDS:
-                # 炉盖指令：逐秒倒计时显示
+                # 炉盖指令：逐秒倒计时显示(mock模式跳过无效等待)
                 wait_s = LID_WAIT_S
                 for remaining in range(int(wait_s), 0, -1):
                     if not self._running:
@@ -583,6 +681,12 @@ class WeighController(QObject):
         _log("start_single_sample_weigh: valid_rows=" + str(self._valid_rows))
         self._start_worker("single_sample")
 
+    def start_individual_sample_weigh(self, valid_rows):
+        self._valid_rows = self._filter_valid(valid_rows)
+        self._weigh_phase = "individual_sample"
+        _log("start_individual_sample_weigh: valid_rows=" + str(self._valid_rows))
+        self._start_worker("individual_sample")
+
     def confirm_current_weigh(self):
         if self._worker and hasattr(self._worker, "confirm_current_weigh"):
             self._worker.confirm_current_weigh()
@@ -624,6 +728,8 @@ class WeighController(QObject):
             self._worker.run_sample(self._valid_rows)
         elif phase == "single_sample":
             self._worker.run_single_sample(self._valid_rows)
+        elif phase == "individual_sample":
+            self._worker.run_individual_sample(self._valid_rows)
 
     def _on_worker_progress(self, info):
         self.sig_weighing_progress.emit(info)

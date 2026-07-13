@@ -238,7 +238,7 @@ class SettingsDialog(QDialog):
         left_form.setContentsMargins(0, 0, 0, 0)
 
         self.cb_weigh = QComboBox()
-        self.cb_weigh.addItems(["批量称坩埚，批量称样品", "批量称坩埚，单个称样品"])
+        self.cb_weigh.addItems(["批量称坩埚，批量称样品", "批量称坩埚，单独称样品"])
         left_form.addRow(" 称重方式 ", self.cb_weigh)
 
         h9 = QHBoxLayout(); h9.setSpacing(2)

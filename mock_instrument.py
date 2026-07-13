@@ -252,6 +252,8 @@ class SimSerialAdapter:
         self.port = "MOCK"
         self._read_buf = bytearray()
         self._handshake_resp = bytearray()  # 握手指令专用响应通道
+        import threading
+        self._lock = threading.Lock()
 
     def write(self, data):
         if not data:
@@ -316,25 +318,25 @@ class SimSerialAdapter:
         return data
 
     def _drain_uplink(self):
-        """将模拟器上行缓存转移到读缓存"""
-        up = bytes(self._sim._uplink_buf)
-        self._sim._uplink_buf.clear()
-        if up:
-            self._read_buf.extend(up)
-            # 更新 SerialManager 的上行时间戳，避免握手预检误判链路断开
-            if self._serial_mgr:
-                self._serial_mgr.update_uplink_time()
-        # 同时也转移 resp_buf
-        rp = bytes(self._sim._resp_buf)
-        self._sim._resp_buf.clear()
-        if rp:
-            self._read_buf.extend(rp)
+        """将模拟器上行缓存转移到读缓存(线程安全)"""
+        with self._lock:
+            up = bytes(self._sim._uplink_buf)
+            self._sim._uplink_buf.clear()
+            if up:
+                self._read_buf.extend(up)
+                if self._serial_mgr:
+                    self._serial_mgr.update_uplink_time()
+            rp = bytes(self._sim._resp_buf)
+            self._sim._resp_buf.clear()
+            if rp:
+                self._read_buf.extend(rp)
 
     def reset_input_buffer(self):
-        self._read_buf.clear()
-        self._handshake_resp.clear()
-        self._sim._uplink_buf.clear()
-        self._sim._resp_buf.clear()
+        with self._lock:
+            self._read_buf.clear()
+            self._handshake_resp.clear()
+            self._sim._uplink_buf.clear()
+            self._sim._resp_buf.clear()
 
     def reset_output_buffer(self):
         self._read_buf.clear()

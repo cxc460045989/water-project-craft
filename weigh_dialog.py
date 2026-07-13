@@ -20,7 +20,7 @@ class WeighDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("称量提示")
         self.setWindowFlags(self.windowFlags() & ~Qt.WindowContextHelpButtonHint)
-        self.setFixedSize(720, 420)
+        self.setFixedSize(936, 462)
         self.setModal(True)
         self._build_ui()
         self._apply_style()
@@ -199,12 +199,12 @@ class WeighDialog(QDialog):
         self.btn_cancel.setVisible(True)
         self.btn_cancel.setEnabled(False)
         self.title_label.setText("样品重量超出范围")
-        self.sub_label.setText(name + " weight={:.4f}g 范围=[{:.4f},{:.4f}]".format(weight, lo, hi))
+        self.sub_label.setText("样重超出范围（{:.4f}-{:.4f}g）！".format(lo, hi))
         self.weight_label.setText("将重新称量该样品")
 
     def update_real_time_weight(self, weight):
         """刷新实时重量显示"""
-        if self._phase == "single_waiting":
+        if self._phase in ("single_waiting", "individual_waiting"):
             self.weight_label.setText("{:.4f}g".format(weight))
 
     def show_single_weigh_done(self, row, weight):
@@ -216,6 +216,18 @@ class WeighDialog(QDialog):
         self.title_label.setText(str(row + 1) + "号称量完成")
         self.sub_label.setText("重量: {:.4f}g".format(weight))
         self.weight_label.setText("")
+
+    def show_individual_weighing(self, row, name, weight):
+        """单独称重模式: 实时重量 + 确认按钮"""
+        self._phase = "individual_waiting"
+        self.btn_action.setVisible(False)
+        self.btn_confirm.setVisible(True)
+        self.btn_confirm.setEnabled(True)
+        self.btn_cancel.setVisible(True)
+        self.btn_cancel.setEnabled(True)
+        self.title_label.setText("正在称量 " + str(row + 1) + " 号样品")
+        self.sub_label.setText("样品名称：" + name)
+        self.weight_label.setText("{:.4f}g".format(weight))
     def reset(self):
         self.title_label.setText("")
         self.sub_label.setText("")

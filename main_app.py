@@ -1152,8 +1152,8 @@ class MoistureAnalyzer(QMainWindow):
 
             p = load_params()
             weigh_mode = p.get("weigh_mode", 0)
-            if weigh_mode != 0:
-                # 单个称量模式
+            if weigh_mode == 1:
+                # 单独称量模式(仪器按键确认)
                 valid_rows = []
                 for r in range(1, self._table.rowCount()):
                     item = self._table.item(r, 0)
@@ -1170,11 +1170,13 @@ class MoistureAnalyzer(QMainWindow):
                 ctrl.set_table(self._table)
                 ctrl.set_serial_manager(self.serial_mgr)
 
-                def on_weigh_progress_single(info):
+                def on_weigh_progress_individual(info):
                     if info["phase"] == "tare":
                         dlg.show_weighing(info["row"], info["name"], info["weight"])
+                    elif info["phase"] == "individual":
+                        dlg.show_individual_weighing(info["row"], info["name"], info["weight"])
 
-                def on_weigh_done_single(phase):
+                def on_weigh_done_individual(phase):
                     if phase == "tare":
                         ctrl.show_add_sample_prompt()
                     elif phase == "sample":
@@ -1190,7 +1192,7 @@ class MoistureAnalyzer(QMainWindow):
                                 weight_item = self._table.item(r, 3)
                                 weight = float(weight_item.text()) if weight_item and weight_item.text() else 0.0
                                 mode_item = self._table.item(r, 1)
-                                mode = mode_item.text().strip() if mode_item and mode_item.text() else "\u5206\u6790\u6c34"
+                                mode = mode_item.text().strip() if mode_item and mode_item.text() else "分析水"
                                 sample_list.append({"row": r, "name": name, "weight": weight, "tare": tare, "mode": mode})
                         if sample_list:
                             exp_id = create_experiment()
@@ -1206,34 +1208,31 @@ class MoistureAnalyzer(QMainWindow):
                             check_dlg.exec_()
                         dlg.accept()
 
-                def on_add_sample_prompt_single():
+                def on_add_sample_prompt_individual():
                     dlg.show_add_sample_prompt()
 
-                # 单个称量信号
-                def on_confirm_weigh(row, name, weight):
-                    dlg.show_single_weigh_waiting(row, name, weight)
-
-                def on_real_time_weight(weight):
+                def on_real_time_weight_individual(weight):
                     dlg.update_real_time_weight(weight)
 
-                def on_single_weigh_done(row, weight):
+                def on_single_weigh_done_individual(row, weight):
                     dlg.show_single_weigh_done(row, weight)
 
-                def on_weight_out_of_range(name, weight, lo, hi):
+                def on_weight_out_of_range_individual(name, weight, lo, hi):
                     dlg.show_single_out_of_range(name, weight, lo, hi)
 
-                ctrl.sig_weighing_progress.connect(on_weigh_progress_single)
-                ctrl.sig_weighing_done.connect(on_weigh_done_single)
-                ctrl.sig_add_sample_prompt.connect(on_add_sample_prompt_single)
+                ctrl.sig_weighing_progress.connect(on_weigh_progress_individual)
+                ctrl.sig_weighing_done.connect(on_weigh_done_individual)
+                ctrl.sig_add_sample_prompt.connect(on_add_sample_prompt_individual)
                 ctrl.sig_status_msg.connect(dlg.show_status)
                 ctrl.sig_error.connect(lambda msg: QMessageBox.warning(self, "称量错误", msg))
-                ctrl.sig_confirm_weigh.connect(on_confirm_weigh)
-                ctrl.sig_real_time_sample_weight.connect(on_real_time_weight)
-                ctrl.sig_single_weigh_done.connect(on_single_weigh_done)
-                ctrl.sig_weight_out_of_range.connect(on_weight_out_of_range)
+                ctrl.sig_real_time_sample_weight.connect(on_real_time_weight_individual)
+                ctrl.sig_single_weigh_done.connect(on_single_weigh_done_individual)
+                ctrl.sig_weight_out_of_range.connect(on_weight_out_of_range_individual)
+                ctrl.sig_confirm_weigh.connect(lambda row, name, w: dlg.show_individual_weighing(row, name, w))
 
                 dlg.confirm_weigh_clicked.connect(ctrl.confirm_current_weigh)
-                dlg.start_sample_clicked.connect(lambda: ctrl.start_single_sample_weigh(valid_rows))
+
+                dlg.start_sample_clicked.connect(lambda: ctrl.start_individual_sample_weigh(valid_rows))
 
                 ctrl.start_tare_weigh(valid_rows)
                 dlg.exec_()
