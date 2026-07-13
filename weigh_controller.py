@@ -48,6 +48,7 @@ class WeighWorker(QThread):
         self._table_ref = None
         self._confirm_event = None
         self._last_uplink_time = time.time()  # 最近上行帧时间戳
+        self._last_btn_pressed = False          # 最近上行帧仪器按键状态
 
     def set_backfill(self, cb):
         self._backfill_cb = cb
@@ -88,6 +89,8 @@ class WeighWorker(QThread):
                 pass
 
     def run(self):
+        # 屏蔽主线程 poll timer，避免竞争串口数据
+        self._serial.set_bypass_poll(True)
         try:
             if self._cur_phase == "tare":
                 self._batch_tare()
@@ -103,6 +106,7 @@ class WeighWorker(QThread):
             traceback.print_exc()
         finally:
             self._running = False
+            self._serial.set_bypass_poll(False)
             self.sig_finished.emit()
 
     # ===== 批量称坩埚 =====
@@ -327,6 +331,12 @@ class WeighWorker(QThread):
                     "phase": "individual", "row": row, "name": name,
                     "weight": last_weight
                 })
+                # 发送样品净重到仪器（发后不管，不等响应）
+                self._send_weight_fire_and_forget(last_weight)
+                # 检测仪器按键按下 → 自动确认
+                if self._last_btn_pressed:
+                    self._confirm_event.set()
+                    break
             self._sleep(0.3)
         return last_weight
 
@@ -343,7 +353,7 @@ class WeighWorker(QThread):
             if ok:
                 sample = round(total - tare_weight, 4) if tare_weight else round(total, 4)
                 self.sig_real_time_sample_weight.emit(sample)
-                self._send_send_weight_to_instrument(sample)
+                self._send_weight_fire_and_forget(sample)
                 if self._check_instrument_button():
                     return True
             self._sleep(0.3)
@@ -369,6 +379,13 @@ class WeighWorker(QThread):
         send_cmd_with_uplink_check(
             self._serial, cmd, "发送天平数据",
         )
+
+    def _send_weight_fire_and_forget(self, weight_g):
+        """发送天平数据到仪器，仅发送不等响应（发后不管）"""
+        from protocol_layer import CommandBuilder
+        cmd = CommandBuilder.build_send_weight(weight_g)
+        self._serial.send(cmd)
+        _log("发送天平数据到仪器: {:.4f}g 指令=".format(weight_g) + cmd.hex())
 
     def _check_instrument_button(self):
         try:
@@ -598,6 +615,7 @@ class WeighWorker(QThread):
         f = frames[-1]
         if f is not None:
             self._serial.update_uplink_time()
+            self._last_btn_pressed = bool(f.get("btn_pressed", 0))
             raw_str = f.get("raw_str", "?")
             if not hasattr(self, "_last_uplink_raw") or self._last_uplink_raw != raw_str:
                 _log("上行帧: raw=" + raw_str +

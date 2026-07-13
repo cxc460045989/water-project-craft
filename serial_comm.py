@@ -103,6 +103,7 @@ class SerialManager(QObject):
         self._heartbeat.timeout.connect(self.heartbeat_timeout)
         self._last_uplink_time = 0.0  # 最近上行数据时间戳
         self._uplink_watchdog = None  # QTimer 上行超时监视器
+        self._bypass_poll = False     # 称重期间为 True，主线程 poll 跳过 read_all() 避免竞争
 
     @staticmethod
     def scan_ports():
@@ -111,6 +112,10 @@ class SerialManager(QObject):
     @staticmethod
     def scan_ports_short():
         return SerialScanner.list_ports_short()
+
+    def set_bypass_poll(self, bypass):
+        """称重期间设为 True，主线程 poll 跳过串口读取，避免与 Worker 竞争数据"""
+        self._bypass_poll = bypass
 
     @property
     def is_connected(self):

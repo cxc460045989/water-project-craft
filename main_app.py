@@ -444,6 +444,8 @@ class MoistureAnalyzer(QMainWindow):
         """周期性轮询串口上行帧, 触发 data_received 更新 UI"""
         if not self.serial_mgr.is_connected:
             return
+        if self.serial_mgr._bypass_poll:
+            return
         try:
             raw = self.serial_mgr.read_all()
         except Exception:
