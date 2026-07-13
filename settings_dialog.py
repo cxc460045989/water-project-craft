@@ -60,6 +60,11 @@ class SettingsDialog(QDialog):
                 font-size: 13px;
                 min-height: 24px;
             }
+            QLineEdit:disabled {
+                background-color: #E0E0E0;
+                color: #9CA3AF;
+                border: 1px solid #D1D5DB;
+            }
             QCheckBox {
                 font-size: 13px;
                 font-weight: bold;
@@ -115,6 +120,10 @@ class SettingsDialog(QDialog):
         self.rb_gb.setChecked(True)
         self.rb_kf = QRadioButton(" 快速法 ")
         self.rb_custom = QRadioButton(" 自定义 ")
+        # 选中测试方式时自动应用对应的默认参数
+        self.rb_gb.clicked.connect(self._apply_method_defaults)
+        self.rb_kf.clicked.connect(self._apply_method_defaults)
+        self.rb_custom.clicked.connect(self._apply_method_defaults)
         method_layout.addWidget(self.rb_gb)
         method_layout.addWidget(self.rb_kf)
         method_layout.addWidget(self.rb_custom)
@@ -179,6 +188,7 @@ class SettingsDialog(QDialog):
 
         self.cb_aw_const = QCheckBox(" 恒重检查 ")
         self.cb_aw_const.setChecked(True)
+        self.cb_aw_const.toggled.connect(self._on_aw_const_toggled)
         aw_layout.addRow("", self.cb_aw_const)
 
         h3 = QHBoxLayout(); h3.setSpacing(6)
@@ -211,6 +221,7 @@ class SettingsDialog(QDialog):
 
         self.cb_tw_const = QCheckBox(" 恒重检查 ")
         self.cb_tw_const.setChecked(True)
+        self.cb_tw_const.toggled.connect(self._on_tw_const_toggled)
         tw_layout.addRow("", self.cb_tw_const)
 
         h7 = QHBoxLayout(); h7.setSpacing(6)
@@ -388,6 +399,68 @@ class SettingsDialog(QDialog):
         p["com_port"] = port
         save_params(**p)
         print("[SETTINGS] 串口号已保存:", port)
+    def _on_aw_const_toggled(self, checked):
+        """分析水恒重检查 → 设置精度 / 称量间隔 联动禁用"""
+        self.le_aw_prec.setEnabled(checked)
+        self.le_aw_interval.setEnabled(checked)
+
+    def _on_tw_const_toggled(self, checked):
+        """全水恒重检查 → 设置精度 / 称量间隔 联动禁用"""
+        self.le_tw_prec.setEnabled(checked)
+        self.le_tw_interval.setEnabled(checked)
+
+    def _apply_method_defaults(self):
+        """根据选中的测试方式（国标法/快速法/自定义）自动填充参数默认值。
+        国标法和自定义共用同一套默认值；快速法使用另一套。
+        不改变的值：测试单位、化验员输入框。
+        """
+        is_fast = self.rb_kf.isChecked()  # 快速法 vs 国标法/自定义
+
+        if is_fast:
+            # ---- 快速法默认值 ----
+            # 分析水控温控时
+            self.le_aw_temp.setText("145")
+            self.le_aw_time.setText("10")
+            self.cb_aw_const.setChecked(False)
+            self.le_aw_prec.setText("0.0010")
+            self.le_aw_interval.setText("3")
+            # 全水控温控时
+            self.le_tw_temp.setText("145")
+            self.le_tw_time.setText("30")
+            self.cb_tw_const.setChecked(False)
+            self.le_tw_prec.setText("0.0010")
+            self.le_tw_interval.setText("3")
+        else:
+            # ---- 国标法 / 自定义 默认值 ----
+            # 分析水控温控时
+            self.le_aw_temp.setText("105")
+            self.le_aw_time.setText("60")
+            self.cb_aw_const.setChecked(True)
+            self.le_aw_prec.setText("0.0010")
+            self.le_aw_interval.setText("3")
+            # 全水控温控时
+            self.le_tw_temp.setText("105")
+            self.le_tw_time.setText("60")
+            self.cb_tw_const.setChecked(True)
+            self.le_tw_prec.setText("0.0010")
+            self.le_tw_interval.setText("3")
+
+        # ---- 称重与校正参数（两种模式相同）----
+        self.cb_weigh.setCurrentIndex(0)  # 批量称坩埚，批量称样品
+        self.le_tw_low.setText("9.0000")
+        self.le_tw_high.setText("12.0000")
+        self.le_aw_low.setText("0.9000")
+        self.le_aw_high.setText("1.1000")
+        self.le_tw_corr.setText("0.00")
+        self.le_aw_corr.setText("0.00")
+
+        # ---- 功能开关选项（两种模式相同）----
+        self.cb_aw_fan.setChecked(True)
+        self.cb_tw_fan.setChecked(True)
+        self.cb_beep.setChecked(True)
+        self.cb_retest.setChecked(False)
+        self.cb_autoclear.setChecked(True)
+
     def save_all_params(self):
         """保存当前对话框所有参数到数据库（可在关闭前调用）"""
         import sys; print("[DEBUG] save_all_params called", file=sys.stderr)

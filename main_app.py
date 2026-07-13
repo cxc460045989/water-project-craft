@@ -11,7 +11,7 @@ from PySide2.QtWidgets import (
     QHeaderView, QAbstractItemView, QSizePolicy, QFrame, QStyle, QProgressBar,
     QMessageBox,
 )
-from PySide2.QtCore import Qt, QSize, QEvent, QTimer, QSharedMemory
+from PySide2.QtCore import Qt, QSize, QEvent, QTimer
 from PySide2.QtGui import QFont, QKeySequence
 from db import load_params, save_params, load_techs
 from button_styles import BUTTON_QSS, apply_button_types
@@ -1399,12 +1399,14 @@ def main():
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
 
-    # 单实例锁 — 禁止重复启动
-    _shared = QSharedMemory("MoistureAnalyzer_SingleInstance")
-    if _shared.attach():
+    # 单实例锁 — socket 端口绑定，进程退出 OS 自动释放
+    import socket
+    _lock_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        _lock_sock.bind(("127.0.0.1", 51234))
+    except socket.error:
         QMessageBox.warning(None, "提示", "程序已在运行中，不能重复打开。")
         sys.exit(1)
-    _shared.create(1)
 
     # 启动画面
     w = MoistureAnalyzer()
