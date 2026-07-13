@@ -9,8 +9,9 @@ from PySide2.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QTableWidget, QTableWidgetItem, QComboBox, QLabel,
     QHeaderView, QAbstractItemView, QSizePolicy, QFrame, QStyle, QProgressBar,
+    QMessageBox,
 )
-from PySide2.QtCore import Qt, QSize, QEvent, QTimer
+from PySide2.QtCore import Qt, QSize, QEvent, QTimer, QSharedMemory
 from PySide2.QtGui import QFont, QKeySequence
 from db import load_params, save_params, load_techs
 from button_styles import BUTTON_QSS, apply_button_types
@@ -1398,8 +1399,16 @@ def main():
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
 
+    # 单实例锁 — 禁止重复启动
+    _shared = QSharedMemory("MoistureAnalyzer_SingleInstance")
+    if _shared.attach():
+        QMessageBox.warning(None, "提示", "程序已在运行中，不能重复打开。")
+        sys.exit(1)
+    _shared.create(1)
+
     # 启动画面
-    w = MoistureAnalyzer(); w.show()
+    w = MoistureAnalyzer()
+    w.show()
     sys.exit(app.exec_())
 
 if __name__ == "__main__":

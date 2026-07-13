@@ -261,66 +261,72 @@ class WeighWorker(QThread):
         individual_rows = [(r, n, m) for r, n, m in self._valid_rows if r > 0]
         _log("单独称量样品开始, 有效样品 " + str(len(individual_rows)) + " 个")
 
-        for row, name, mode in individual_rows:
-            if not self._running:
-                return
-            position = row + 1
-            _log("单独称量 row=" + str(row) + " name=" + name + " pos=" + str(position))
+        self._send_cmd(CMD.ENTER_WEIGH_MODE, desc="进入称量样重状态")
+        self._sleep(CMD_INTERVAL_S)
 
-            # 步骤1: 移动到指定位
-            self.sig_weigh_progress.emit({"phase": "individual", "row": row, "name": name, "weight": 0.0})
-            self._send_move_to(position)
-            self._sleep(CMD_INTERVAL_S)
-            # 步骤2: 延时1s等待机械稳定
-            self._sleep(1.0)
-            # 步骤3: 天平清零(去皮)
-            self._send_cmd(CMD.TARE, desc="天平清零")
-            _log("天平清零已发送")
-            # 提前获取坩埚重，用于实时显示净重
-            tare_weight = self._get_tare_weight(row)
-
-            while self._running:
-                # 步骤4: 样盘下降 → 进入称重就绪
-                self._send_cmd(CMD.SAMPLE_PLATE_DOWN, desc="样盘下降")
-                _t0 = time.time()
-                while self._running and (time.time() - _t0) < 15.0:
-                    _, ok = self._read_uplink_weight()
-                    if ok:
-                        break
-                    self._sleep(0.1)
-                _log("样盘下降完成, 等待确认...")
-
-                # 步骤5: 等待UI确认(持续刷新净重显示)
-                weight = self._wait_ui_confirm_with_display(row, name, tare_weight)
+        try:
+            for row, name, mode in individual_rows:
                 if not self._running:
                     return
+                position = row + 1
+                _log("单独称量 row=" + str(row) + " name=" + name + " pos=" + str(position))
 
-                # 步骤6: 计算样品净重 = 天平读数 - 坩埚重
-                sample_weight = round(weight - tare_weight, 4)
-                _log("单独称量 row=" + str(row) +
-                     " 总重=" + str(weight) +
-                     " 坩埚重=" + str(tare_weight) +
-                     " 样重=" + str(sample_weight))
-                lo, hi = self._get_weight_range_for_mode(mode)
-                if sample_weight < lo or sample_weight > hi:
-                    self.sig_weight_out_of_range.emit(name, sample_weight, lo, hi)
-                    _log("重量超限 row=" + str(row) + " weight=" + str(sample_weight) +
-                         " range=[" + str(lo) + "," + str(hi) + "] 重新称量")
-                    continue  # 回到步骤4(样盘下降)
+                # 步骤1: 移动到指定位
+                self.sig_weigh_progress.emit({"phase": "individual", "row": row, "name": name, "weight": 0.0})
+                self._send_move_to(position)
+                self._sleep(CMD_INTERVAL_S)
+                # 步骤2: 延时1s等待机械稳定
+                self._sleep(1.0)
+                # 步骤3: 天平清零(去皮)
+                self._send_cmd(CMD.TARE, desc="天平清零")
+                _log("天平清零已发送")
+                # 提前获取坩埚重，用于实时显示净重
+                tare_weight = self._get_tare_weight(row)
 
-                # 合格: 保存数据
-                self.sig_single_weigh_done.emit(row, sample_weight)
-                _log("单独称量完成 row=" + str(row) + " weight=" + str(sample_weight))
-                if self._backfill_cb:
-                    self._backfill_cb(row, SAMPLE_TARGET_COL, sample_weight, "sample",
-                                      total_weight=weight, tare_weight=tare_weight)
-                break  # 进入下一个样位
+                while self._running:
+                    # 步骤4: 样盘下降 → 进入称重就绪
+                    self._send_cmd(CMD.SAMPLE_PLATE_DOWN, desc="样盘下降")
+                    _t0 = time.time()
+                    while self._running and (time.time() - _t0) < 15.0:
+                        _, ok = self._read_uplink_weight()
+                        if ok:
+                            break
+                        self._sleep(0.1)
+                    _log("样盘下降完成, 等待确认...")
 
-        _log("单独称量全部完成")
-        self.sig_status_msg.emit("正在上升样盘...")
-        self._send_long_duration_cmd(CMD.SAMPLE_PLATE_UP, desc="样盘上升")
-        self._send_cmd(CMD.BEEPER_1S, desc="蜂鸣提示")
-        self.sig_weigh_done.emit("sample")
+                    # 步骤5: 等待UI确认(持续刷新净重显示)
+                    weight = self._wait_ui_confirm_with_display(row, name, tare_weight)
+                    if not self._running:
+                        return
+
+                    # 步骤6: 计算样品净重 = 天平读数 - 坩埚重
+                    sample_weight = round(weight - tare_weight, 4)
+                    _log("单独称量 row=" + str(row) +
+                         " 总重=" + str(weight) +
+                         " 坩埚重=" + str(tare_weight) +
+                         " 样重=" + str(sample_weight))
+                    lo, hi = self._get_weight_range_for_mode(mode)
+                    if sample_weight < lo or sample_weight > hi:
+                        self.sig_weight_out_of_range.emit(name, sample_weight, lo, hi)
+                        _log("重量超限 row=" + str(row) + " weight=" + str(sample_weight) +
+                             " range=[" + str(lo) + "," + str(hi) + "] 重新称量")
+                        continue  # 回到步骤4(样盘下降)
+
+                    # 合格: 保存数据
+                    self.sig_single_weigh_done.emit(row, sample_weight)
+                    _log("单独称量完成 row=" + str(row) + " weight=" + str(sample_weight))
+                    if self._backfill_cb:
+                        self._backfill_cb(row, SAMPLE_TARGET_COL, sample_weight, "sample",
+                                          total_weight=weight, tare_weight=tare_weight)
+                    break  # 进入下一个样位
+
+            _log("单独称量全部完成")
+            self.sig_status_msg.emit("正在上升样盘...")
+            self._send_long_duration_cmd(CMD.SAMPLE_PLATE_UP, desc="样盘上升")
+            self._send_cmd(CMD.BEEPER_1S, desc="蜂鸣提示")
+            self.sig_weigh_done.emit("sample")
+        finally:
+            self._send_cmd(CMD.EXIT_WEIGH_MODE, desc="解除称重状态")
 
     def _wait_ui_confirm_with_display(self, row, name, tare_weight=0.0):
         """等待UI确认按钮，期间持续刷新天平读数显示
