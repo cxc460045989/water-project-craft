@@ -1180,7 +1180,8 @@ class MoistureAnalyzer(QMainWindow):
 
                 def on_weigh_done_individual(phase):
                     if phase == "tare":
-                        ctrl.show_add_sample_prompt()
+                        # 单独称量模式: 称完坩埚后直接进入样品称量，跳过"请添加样品"提示
+                        ctrl.start_individual_sample_weigh(valid_rows)
                     elif phase == "sample":
                         from weight_check_dialog import WeightCheckDialog
                         from db import create_experiment, save_experiment_samples
