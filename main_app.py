@@ -779,24 +779,45 @@ class MoistureAnalyzer(QMainWindow):
 
     # ---- 重新称量回退入口 ----
     def _on_reweigh_flow(self):
+        """重新称量：使用原有批量称重流程，只称不合格样品，合格跳过"""
         from weigh_dialog import WeighDialog
         from weigh_controller import WeighController
         from weight_check_dialog import WeightCheckDialog
-        from db import create_experiment, save_experiment_samples, load_params
+        from db import load_params
         from PySide2.QtWidgets import QMessageBox
 
-        valid_rows = []
+        # 找出所有不合格样品
+        params = load_params()
+        tw_low = float(params.get("tw_low", 9.0))
+        tw_high = float(params.get("tw_high", 12.0))
+        aw_low = float(params.get("aw_low", 0.9))
+        aw_high = float(params.get("aw_high", 1.1))
+
+        failed_rows = []
+        all_valid = []
         for r in range(1, self._table.rowCount()):
             item = self._table.item(r, 0)
-            if item and item.text().strip():
-                valid_rows.append(r)
-        if not valid_rows:
+            if not item or not item.text().strip():
+                continue
+            all_valid.append(r)
+            weight_item = self._table.item(r, 3)
+            weight = float(weight_item.text()) if weight_item and weight_item.text() else 0.0
+            mode_item = self._table.item(r, 1)
+            mode = mode_item.text().strip() if mode_item and mode_item.text() else "分析水"
+            lo, hi = (tw_low, tw_high) if mode == "全水" else (aw_low, aw_high)
+            if weight < lo or weight > hi:
+                failed_rows.append(r)
+
+        if not failed_rows:
+            QMessageBox.information(self, "提示", "所有样品均已合格，无需重新称量")
             return
 
         dlg = WeighDialog(self)
         dlg.enable_cancel(True)
         ctrl = WeighController(self)
         ctrl.set_table(self._table)
+        ctrl.set_serial_manager(self.serial_mgr)
+        ctrl.set_reweigh_rows(failed_rows)
 
         def on_weigh_progress(info):
             if info["phase"] == "tare":
@@ -808,7 +829,7 @@ class MoistureAnalyzer(QMainWindow):
             if phase == "tare":
                 ctrl.show_add_sample_prompt()
             elif phase == "sample":
-                sample_list = []
+                failed_samples = []
                 for r in range(1, self._table.rowCount()):
                     name_item = self._table.item(r, 0)
                     if name_item and name_item.text().strip():
@@ -819,20 +840,16 @@ class MoistureAnalyzer(QMainWindow):
                         weight = float(weight_item.text()) if weight_item and weight_item.text() else 0.0
                         mode_item = self._table.item(r, 1)
                         mode = mode_item.text().strip() if mode_item and mode_item.text() else "分析水"
-                        sample_list.append({"row": r, "name": name, "weight": weight, "tare": tare, "mode": mode})
-                if sample_list:
-                    exp_id = create_experiment()
-                    exp_samples = []
-                    for s in sample_list:
-                        exp_samples.append({"row_idx": s["row"], "name": s["name"],
-                            "mode": s["mode"], "tare_weight": s["tare"], "sample_weight": s["weight"]})
-                    save_experiment_samples(exp_id, exp_samples)
-                    params = load_params()
+                        lo, hi = (tw_low, tw_high) if mode == "全水" else (aw_low, aw_high)
+                        if weight < lo or weight > hi:
+                            failed_samples.append({"row": r, "name": name, "weight": weight,
+                                                  "tare": tare, "mode": mode})
+                dlg.accept()
+                if failed_samples:
                     check_dlg = WeightCheckDialog(self)
-                    check_dlg.load_sample_data(sample_list, params)
+                    check_dlg.load_sample_data(failed_samples, params)
                     check_dlg.reweigh_clicked.connect(self._on_reweigh_flow)
                     check_dlg.exec_()
-                dlg.accept()
 
         def on_add_sample_prompt():
             dlg.show_add_sample_prompt()
@@ -843,9 +860,9 @@ class MoistureAnalyzer(QMainWindow):
         ctrl.sig_status_msg.connect(dlg.show_status)
         ctrl.sig_error.connect(lambda msg: QMessageBox.warning(self, "称量错误", msg))
 
-        dlg.start_sample_clicked.connect(ctrl.start_sample_weigh)
+        dlg.start_sample_clicked.connect(ctrl.start_reweigh_sample)
 
-        ctrl.start_tare_weigh(valid_rows)
+        ctrl.start_reweigh_tare(all_valid)
         dlg.exec_()
         ctrl.stop()
     # ---- table real-time persistence ----
@@ -1184,32 +1201,7 @@ class MoistureAnalyzer(QMainWindow):
                         # 单独称量模式: 称完坩埚后直接进入样品称量，跳过"请添加样品"提示
                         ctrl.start_individual_sample_weigh(valid_rows)
                     elif phase == "sample":
-                        from weight_check_dialog import WeightCheckDialog
-                        from db import create_experiment, save_experiment_samples
-                        sample_list = []
-                        for r in range(1, self._table.rowCount()):
-                            name_item = self._table.item(r, 0)
-                            if name_item and name_item.text().strip():
-                                name = name_item.text().strip()
-                                tare_item = self._table.item(r, 2)
-                                tare = float(tare_item.text()) if tare_item and tare_item.text() else 0.0
-                                weight_item = self._table.item(r, 3)
-                                weight = float(weight_item.text()) if weight_item and weight_item.text() else 0.0
-                                mode_item = self._table.item(r, 1)
-                                mode = mode_item.text().strip() if mode_item and mode_item.text() else "分析水"
-                                sample_list.append({"row": r, "name": name, "weight": weight, "tare": tare, "mode": mode})
-                        if sample_list:
-                            exp_id = create_experiment()
-                            exp_samples = []
-                            for s in sample_list:
-                                exp_samples.append({"row_idx": s["row"], "name": s["name"],
-                                    "mode": s["mode"], "tare_weight": s["tare"], "sample_weight": s["weight"]})
-                            save_experiment_samples(exp_id, exp_samples)
-                            params = load_params()
-                            check_dlg = WeightCheckDialog(self)
-                            check_dlg.load_sample_data(sample_list, params)
-                            check_dlg.reweigh_clicked.connect(self._on_reweigh_flow)
-                            check_dlg.exec_()
+                        # 单独称重: 不显示结果界面，数据已在回填时写入 DB，直接关闭
                         dlg.accept()
 
                 def on_add_sample_prompt_individual():
@@ -1294,11 +1286,24 @@ class MoistureAnalyzer(QMainWindow):
                                 "mode": s["mode"], "tare_weight": s["tare"], "sample_weight": s["weight"]})
                         save_experiment_samples(exp_id, exp_samples)
                         params = load_params()
-                        check_dlg = WeightCheckDialog(self)
-                        check_dlg.load_sample_data(sample_list, params)
-                        check_dlg.reweigh_clicked.connect(self._on_reweigh_flow)
-                        check_dlg.exec_()
-                    dlg.accept()
+                        # 只传不合格样品到结果界面，全合格不弹窗
+                        tw_low = float(params.get("tw_low", 9.0))
+                        tw_high = float(params.get("tw_high", 12.0))
+                        aw_low = float(params.get("aw_low", 0.9))
+                        aw_high = float(params.get("aw_high", 1.1))
+                        failed_samples = []
+                        for s in sample_list:
+                            lo, hi = (tw_low, tw_high) if s.get("mode") == "全水" else (aw_low, aw_high)
+                            if s["weight"] < lo or s["weight"] > hi:
+                                failed_samples.append(s)
+                        dlg.accept()
+                        if failed_samples:
+                            check_dlg = WeightCheckDialog(self)
+                            check_dlg.load_sample_data(failed_samples, params)
+                            check_dlg.reweigh_clicked.connect(self._on_reweigh_flow)
+                            check_dlg.exec_()
+                    else:
+                        dlg.accept()
 
             def on_add_sample_prompt():
                 dlg.show_add_sample_prompt()

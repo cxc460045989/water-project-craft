@@ -35,8 +35,8 @@ class CMD:
     CALIBRATE = 0x17          # 天平校正
     CLOSE_LID = 0x18          # 关闭炉盖
     OPEN_LID = 0x19           # 打开炉盖
-    ENTER_WEIGH_MODE = 0x11   # 进入仪器称量样重状态
-    EXIT_WEIGH_MODE = 0x12    # 解除称重状态
+    ENTER_WEIGH_MODE = 0x12   # 进入仪器称量样重状态
+    EXIT_WEIGH_MODE = 0x11    # 解除称重状态
     ALL_OFF = 0x10            # 关闭鼓风、氮气、加热
     HEAT_OFF = 0x1B           # 关闭加热
     FAN_ON = 0x1C             # 开鼓风

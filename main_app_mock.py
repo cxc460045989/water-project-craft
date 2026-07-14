@@ -53,6 +53,8 @@ def _patch_for_mock(mod):
         # 启动上行帧轮询定时器: 每200ms读取模拟器上行帧并触发 data_received 信号
         from PySide2.QtCore import QTimer
         def _poll():
+            if self._bypass_poll:
+                return
             try:
                 raw = self._serial.read_all()
             except Exception:

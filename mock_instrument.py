@@ -156,7 +156,11 @@ class MockInstrumentSimulator:
             # 样品称量阶段: 天平读数 = 坩埚 + 样品
             if self._in_sample_phase:
                 if self._position not in self._sample_weights:
-                    self._sample_weights[self._position] = round(0.95 + self._position * 0.005, 4)
+                    # 模拟不同模式重量: 前6位 ~1g(分析水范围), 后6位 ~10g(全水范围)
+                    if self._position <= 6:
+                        self._sample_weights[self._position] = round(0.95 + self._position * 0.01, 4)
+                    else:
+                        self._sample_weights[self._position] = round(9.50 + (self._position - 6) * 0.12, 4)
                 self._weight = base + self._sample_weights[self._position]
             else:
                 self._weight = base

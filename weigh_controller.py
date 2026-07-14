@@ -49,6 +49,7 @@ class WeighWorker(QThread):
         self._confirm_event = None
         self._last_uplink_time = time.time()  # 最近上行帧时间戳
         self._last_btn_pressed = False          # 最近上行帧仪器按键状态
+        self._reweigh_rows = None               # 重新称量模式: set of row indices
 
     def set_backfill(self, cb):
         self._backfill_cb = cb
@@ -80,6 +81,18 @@ class WeighWorker(QThread):
         self._running = True
         self.start()
 
+    def run_reweigh_phase1(self, valid_rows):
+        self._valid_rows = list(valid_rows)
+        self._cur_phase = "reweigh_tare"
+        self._running = True
+        self.start()
+
+    def run_reweigh_phase2(self, valid_rows):
+        self._valid_rows = list(valid_rows)
+        self._cur_phase = "reweigh_sample"
+        self._running = True
+        self.start()
+
     def stop(self):
         self._running = False
         if self._confirm_event:
@@ -100,6 +113,10 @@ class WeighWorker(QThread):
                 self._single_sample()
             elif self._cur_phase == "individual_sample":
                 self._individual_sample()
+            elif self._cur_phase == "reweigh_tare":
+                self._reweigh_tare()
+            elif self._cur_phase == "reweigh_sample":
+                self._reweigh_sample()
         except Exception as e:
             self.sig_error.emit("称量异常: " + str(e))
             import traceback
@@ -327,6 +344,45 @@ class WeighWorker(QThread):
             self.sig_weigh_done.emit("sample")
         finally:
             self._send_cmd(CMD.EXIT_WEIGH_MODE, desc="解除称重状态")
+
+    # ===== 重新称量（独立封装）=====
+    def _reweigh_tare(self):
+        """重新称量-准备阶段: 只做机械动作和发送校正值，不称任何坩埚"""
+        _log("重新称量准备阶段")
+        self._send_long_duration_cmd(CMD.CLOSE_LID, desc="正在关闭炉盖")
+        corr_w = self._get_crucible_correction_weight()
+        if corr_w > 0:
+            _log("发送坩埚校正值: {:.4f}g".format(corr_w))
+            from protocol_layer import CommandBuilder, send_cmd_with_uplink_check
+            corr_cmd = CommandBuilder.build_send_weight(corr_w)
+            send_cmd_with_uplink_check(self._serial, corr_cmd, "坩埚校正值")
+            self._sleep(CMD_INTERVAL_S)
+        self.sig_status_msg.emit("正在上升样盘...")
+        self._send_long_duration_cmd(CMD.SAMPLE_PLATE_UP, desc="样盘上升")
+        self._send_cmd(CMD.OPEN_LID, desc="打开炉盖")
+        self._send_cmd(CMD.BEEPER_1S, desc="蜂鸣提示")
+        self.sig_weigh_done.emit("tare")
+
+    def _reweigh_sample(self):
+        """重新称量-样品阶段: 只称不合格样品，跳过校正坩埚和合格样品"""
+        skip_set = self._reweigh_rows or set()
+        _log("重新称量样品阶段, 待称 " + str(len(skip_set)) + " 个不合格样品")
+        self._send_long_duration_cmd(CMD.CLOSE_LID, desc="正在关闭炉盖")
+        for row, name, mode in self._valid_rows:
+            if not self._running:
+                return
+            if not name.strip():
+                continue
+            if row not in skip_set:
+                _log("row=" + str(row) + " " + name + " 已合格, 跳过")
+                continue
+            self._weigh_one_sample(row, name)
+        _log("重新称量完成")
+        self.sig_status_msg.emit("正在上升样盘...")
+        self._send_long_duration_cmd(CMD.SAMPLE_PLATE_UP, desc="样盘上升")
+        self._send_cmd(CMD.OPEN_LID, desc="打开炉盖")
+        self._send_cmd(CMD.BEEPER_1S, desc="蜂鸣提示")
+        self.sig_weigh_done.emit("sample")
 
     def _wait_ui_confirm_with_display(self, row, name, tare_weight=0.0):
         """等待UI确认按钮，期间持续刷新天平读数显示
@@ -695,12 +751,17 @@ class WeighController(QObject):
         self._table_ref = None
         self._worker = None
         self._serial_mgr = None
+        self._reweigh_rows = None
 
     def set_serial_manager(self, mgr):
         self._serial_mgr = mgr
 
     def set_table(self, table_widget):
         self._table_ref = table_widget
+
+    def set_reweigh_rows(self, rows):
+        """设置重新称量模式: 只称这些行的样品，合格行跳过"""
+        self._reweigh_rows = set(rows) if rows else None
 
     def start_tare_weigh(self, valid_rows):
         self._valid_rows = self._filter_valid(valid_rows)
@@ -728,6 +789,17 @@ class WeighController(QObject):
         self._weigh_phase = "individual_sample"
         _log("start_individual_sample_weigh: valid_rows=" + str(self._valid_rows))
         self._start_worker("individual_sample")
+
+    def start_reweigh_tare(self, valid_rows):
+        self._valid_rows = self._filter_valid(valid_rows)
+        self._weigh_phase = "reweigh_tare"
+        _log("start_reweigh_tare: valid_rows=" + str(self._valid_rows))
+        self._start_worker("reweigh_tare")
+
+    def start_reweigh_sample(self):
+        self._weigh_phase = "reweigh_sample"
+        _log("start_reweigh_sample")
+        self._start_worker("reweigh_sample")
 
     def confirm_current_weigh(self):
         if self._worker and hasattr(self._worker, "confirm_current_weigh"):
@@ -764,6 +836,8 @@ class WeighController(QObject):
         self._worker.sig_weight_out_of_range.connect(self.sig_weight_out_of_range)
         self._worker.sig_status_msg.connect(self._on_status_msg, Qt.BlockingQueuedConnection)
         self._worker.sig_real_time_sample_weight.connect(self.sig_real_time_sample_weight)
+        if self._reweigh_rows is not None:
+            self._worker._reweigh_rows = self._reweigh_rows
         if phase == "tare":
             self._worker.run_tare(self._valid_rows)
         elif phase == "sample":
@@ -772,6 +846,10 @@ class WeighController(QObject):
             self._worker.run_single_sample(self._valid_rows)
         elif phase == "individual_sample":
             self._worker.run_individual_sample(self._valid_rows)
+        elif phase == "reweigh_tare":
+            self._worker.run_reweigh_phase1(self._valid_rows)
+        elif phase == "reweigh_sample":
+            self._worker.run_reweigh_phase2(self._valid_rows)
 
     def _on_worker_progress(self, info):
         self.sig_weighing_progress.emit(info)

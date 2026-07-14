@@ -17,17 +17,18 @@ class WeightCheckDialog(QDialog):
     reweigh_clicked = Signal()  # "重新称量"信号，触发整套流程重跑
 
     # 表格列索引
-    COL_IDX = 0   # 样号
-    COL_NAME = 1  # 样品名称
-    COL_WEIGHT = 2  # 样品重量(g)
-    COL_DEVIATION = 3  # 样重偏差(g)
-    COL_PASS = 4  # 是否合格
+    COL_IDX = 0       # 样号
+    COL_NAME = 1      # 样品名称
+    COL_MODE = 2      # 模式(分析水/全水)
+    COL_WEIGHT = 3    # 样品重量(g)
+    COL_RANGE = 4     # 重量范围
+    COL_DEVIATION = 5 # 偏差(g)
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("水灰样品重量检查")
         self.setWindowFlags(self.windowFlags() & ~Qt.WindowContextHelpButtonHint)
-        self.setFixedSize(600, 480)
+        self.setFixedSize(734, 480)
         self.setModal(True)
         # 外部注入的数据
         self._sample_list = []   # [{row, name, weight, mode}, ...]
@@ -42,10 +43,21 @@ class WeightCheckDialog(QDialog):
 
         # ---- 顶部表格 ----
         self.table = QTableWidget()
-        self.table.setColumnCount(5)
-        self.table.setHorizontalHeaderLabels(["样号", "样品名称", "样品重量(g)", "样重偏差(g)", "是否合格"])
-        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
-        self.table.horizontalHeader().setMinimumSectionSize(80)
+        self.table.setColumnCount(6)
+        self.table.setHorizontalHeaderLabels(["样号", "样品名称", "模式", "样品重量(g)", "重量范围", "偏差(g)"])
+        # 列宽配比: 样号/模式窄, 名称自适应拉伸, 范围列宽一些
+        hh = self.table.horizontalHeader()
+        hh.setSectionResizeMode(self.COL_IDX, QHeaderView.Fixed)
+        hh.setSectionResizeMode(self.COL_NAME, QHeaderView.Stretch)
+        hh.setSectionResizeMode(self.COL_MODE, QHeaderView.Fixed)
+        hh.setSectionResizeMode(self.COL_WEIGHT, QHeaderView.Fixed)
+        hh.setSectionResizeMode(self.COL_RANGE, QHeaderView.Fixed)
+        hh.setSectionResizeMode(self.COL_DEVIATION, QHeaderView.Fixed)
+        self.table.setColumnWidth(self.COL_IDX, 52)
+        self.table.setColumnWidth(self.COL_MODE, 60)
+        self.table.setColumnWidth(self.COL_WEIGHT, 100)
+        self.table.setColumnWidth(self.COL_RANGE, 120)
+        self.table.setColumnWidth(self.COL_DEVIATION, 90)
         self.table.verticalHeader().setVisible(False)
         self.table.setSelectionMode(QAbstractItemView.NoSelection)
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
@@ -147,7 +159,7 @@ class WeightCheckDialog(QDialog):
             "分析水重量范围  {:.4f}g-{:.4f}g".format(aw_low, aw_high))
 
     def _populate_table(self):
-        """填充表格数据、计算偏差、超标标红"""
+        """填充表格数据：重量范围 + 偏差计算"""
         p = self._params
         tw_low = float(p.get("tw_low", 9.0000))
         tw_high = float(p.get("tw_high", 12.0000))
@@ -162,17 +174,21 @@ class WeightCheckDialog(QDialog):
             weight = s.get("weight", 0.0)
             mode = s.get("mode", "分析水")
 
-            # 【上下限读取】根据模式选择对应限值
             if mode == "全水":
                 lo, hi = tw_low, tw_high
             else:
                 lo, hi = aw_low, aw_high
 
-            # 【偏差计算公式】实际样品重量 - 该模式标准下限重量
-            deviation = weight - lo
+            # 偏差: 低于下限为负, 高于上限为正, 范围内为0
+            if weight < lo:
+                deviation = weight - lo
+            elif weight > hi:
+                deviation = weight - hi
+            else:
+                deviation = 0.0
 
-            # 填充样号
-            item_idx = QTableWidgetItem(str(row))
+            # 填充样号(样位号 = 表格行号 + 1)
+            item_idx = QTableWidgetItem(str(row + 1))
             item_idx.setTextAlignment(Qt.AlignCenter)
             self.table.setItem(i, self.COL_IDX, item_idx)
 
@@ -181,29 +197,32 @@ class WeightCheckDialog(QDialog):
             item_name.setTextAlignment(Qt.AlignCenter)
             self.table.setItem(i, self.COL_NAME, item_name)
 
+            # 填充模式
+            item_mode = QTableWidgetItem(mode)
+            item_mode.setTextAlignment(Qt.AlignCenter)
+            self.table.setItem(i, self.COL_MODE, item_mode)
+
             # 填充样品重量
             item_weight = QTableWidgetItem("{:.4f}".format(weight))
             item_weight.setTextAlignment(Qt.AlignCenter)
             self.table.setItem(i, self.COL_WEIGHT, item_weight)
 
-            # 填充样重偏差
-            item_dev = QTableWidgetItem("{:.4f}".format(deviation))
+            # 填充重量范围
+            item_range = QTableWidgetItem("{:.4f} - {:.4f}".format(lo, hi))
+            item_range.setTextAlignment(Qt.AlignCenter)
+            self.table.setItem(i, self.COL_RANGE, item_range)
+
+            # 填充偏差（红色加粗，负号自然显示，正号显式标出）
+            sign = "+" if deviation > 0 else ""
+            item_dev = QTableWidgetItem("{}{:.4f}".format(sign, deviation))
             item_dev.setTextAlignment(Qt.AlignCenter)
+            item_dev.setForeground(QColor(200, 30, 30))
+            item_dev.setFont(QFont("", -1, QFont.Bold))
             self.table.setItem(i, self.COL_DEVIATION, item_dev)
 
-            # 填充是否合格（绿色/红色）
-            passed = (weight >= lo) and (weight <= hi)
-            pass_text = "合格" if passed else "不合格"
-            item_pass = QTableWidgetItem(pass_text)
-            item_pass.setTextAlignment(Qt.AlignCenter)
-            pass_color = QColor(20, 150, 20) if passed else QColor(200, 30, 30)
-            item_pass.setForeground(pass_color)
-            item_pass.setFont(QFont("", -1, QFont.Bold))
-            self.table.setItem(i, self.COL_PASS, item_pass)
-
-            # 前4列保持黑色
+            # 前5列保持黑色
             default_color = QColor(30, 30, 30)
-            for col in range(4):
+            for col in range(5):
                 item = self.table.item(i, col)
                 if item:
                     item.setForeground(default_color)
@@ -211,9 +230,9 @@ class WeightCheckDialog(QDialog):
     # ---- 重新称量 ----
 
     def _on_reweigh(self):
-        """【重新称量流程跳转入口】关闭弹窗，发射信号"""
-        self.reweigh_clicked.emit()
+        """【重新称量流程跳转入口】先关闭结果界面，再发射信号触发重称"""
         self.accept()
+        self.reweigh_clicked.emit()
 
     # ---- 工具 ----
 
