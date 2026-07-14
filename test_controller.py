@@ -57,12 +57,8 @@ class TestConfig:
         self.tw_interval = 5
         self.tw_corr_crucible = 0.0
         self.tw_corr_dry = 0.0
-        # 新增: 测试启用/氮气/最大次数
-        self.aw_n2 = False
-        self.aw_enabled = True
+        # 新增: 最大次数
         self.aw_max_cycles = 3
-        self.tw_n2 = False
-        self.tw_enabled = True
         self.tw_max_cycles = 3
         self.tw_tare_weight = 0.0
         self.samples = []  # [(row_idx, name, mode, sample_weight), ...]
@@ -76,8 +72,6 @@ class TestConfig:
         cfg.aw_time = int(db_params.get("aw_time", 60))
         cfg.aw_precision = float(db_params.get("aw_prec", 0.0010))
         cfg.aw_fan = bool(db_params.get("aw_fan", 0))
-        cfg.aw_n2 = bool(db_params.get("aw_n2", 0))
-        cfg.aw_enabled = bool(db_params.get("aw_enabled", 1))
         cfg.aw_max_cycles = int(db_params.get("aw_max_cycles", 3))
         cfg.aw_const_check = bool(db_params.get("aw_const_check", 1))
         cfg.aw_interval = int(db_params.get("aw_interval", 5))
@@ -87,8 +81,6 @@ class TestConfig:
         cfg.tw_time = int(db_params.get("tw_time", 60))
         cfg.tw_precision = float(db_params.get("tw_prec", 0.0030))
         cfg.tw_fan = bool(db_params.get("tw_fan", 1))
-        cfg.tw_n2 = bool(db_params.get("tw_n2", 0))
-        cfg.tw_enabled = bool(db_params.get("tw_enabled", 1))
         cfg.tw_max_cycles = int(db_params.get("tw_max_cycles", 3))
         cfg.tw_const_check = bool(db_params.get("tw_const_check", 1))
         cfg.tw_interval = int(db_params.get("tw_interval", 5))
@@ -318,12 +310,8 @@ class TestWorker(QObject):
     # ================================================================
 
     def _step_branch_aw(self):
-        """判断是否启用分析水测试"""
-        _log("步骤3: 分析水分支判断, enabled=%s" % self.cfg.aw_enabled)
-        if not self.cfg.aw_enabled:
-            _log("分析水未启用, 跳转全水分支")
-            self._transition(_Phase.BRANCH_TW)
-            return
+        """分析水分支判断"""
+        _log("步骤3: 分析水分支判断")
 
         self._samples = [
             s for s in self.cfg.samples
@@ -348,12 +336,8 @@ class TestWorker(QObject):
     # ================================================================
 
     def _step_branch_tw(self):
-        """判断是否启用全水分测试"""
-        _log("步骤6: 全水分支判断, enabled=%s" % self.cfg.tw_enabled)
-        if not self.cfg.tw_enabled:
-            _log("全水未启用, 跳转结果计算")
-            self._transition(_Phase.CALC_SAVE)
-            return
+        """全水分支判断"""
+        _log("步骤6: 全水分支判断")
 
         self._samples = [
             s for s in self.cfg.samples
@@ -386,10 +370,6 @@ class TestWorker(QObject):
         return self.cfg.aw_fan if self._is_aw else self.cfg.tw_fan
 
     @property
-    def _dry_cfg_n2(self):
-        return self.cfg.aw_n2 if self._is_aw else self.cfg.tw_n2
-
-    @property
     def _dry_cfg_temp(self):
         return self.cfg.aw_temp if self._is_aw else self.cfg.tw_temp
 
@@ -419,16 +399,13 @@ class TestWorker(QObject):
         self._patrol_timer.stop()
 
         fan = self._dry_cfg_fan
-        n2 = self._dry_cfg_n2
         temp = self._dry_cfg_temp
 
-        _log("烘干启动: mode=%s cycle=%d fan=%s n2=%s temp=%dC" %
-             (mode, self._dry_cycle + 1, fan, n2, temp))
+        _log("烘干启动: mode=%s cycle=%d fan=%s temp=%dC" %
+             (mode, self._dry_cycle + 1, fan, temp))
 
         if fan:
             self._safe_send_cmd(CMD.FAN_ON, "开鼓风")
-        if n2:
-            self._safe_send_cmd(CMD.N2_ON, "开氮气")
 
         self.sig_status_msg.emit("%s 第%d轮烘干, 目标%dC" %
                                   (mode, self._dry_cycle + 1, temp))

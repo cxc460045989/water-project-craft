@@ -191,10 +191,6 @@ class SettingsDialog(QDialog):
         self.cb_aw_const.toggled.connect(self._on_aw_const_toggled)
         aw_layout.addRow("", self.cb_aw_const)
 
-        self.cb_aw_enabled = QCheckBox(" 启用分析水测试 ")
-        self.cb_aw_enabled.setChecked(True)
-        aw_layout.addRow("", self.cb_aw_enabled)
-
         h3 = QHBoxLayout(); h3.setSpacing(6)
         self.le_aw_prec = QLineEdit("0.0010"); self.le_aw_prec.setFixedWidth(80); self.le_aw_prec.setAlignment(Qt.AlignCenter)
         h3.addWidget(self.le_aw_prec); h3.addWidget(QLabel(" g "))
@@ -232,10 +228,6 @@ class SettingsDialog(QDialog):
         self.cb_tw_const.setChecked(True)
         self.cb_tw_const.toggled.connect(self._on_tw_const_toggled)
         tw_layout.addRow("", self.cb_tw_const)
-
-        self.cb_tw_enabled = QCheckBox(" 启用全水分测试 ")
-        self.cb_tw_enabled.setChecked(True)
-        tw_layout.addRow("", self.cb_tw_enabled)
 
         h7 = QHBoxLayout(); h7.setSpacing(6)
         self.le_tw_prec = QLineEdit("0.0030"); self.le_tw_prec.setFixedWidth(80); self.le_tw_prec.setAlignment(Qt.AlignCenter)
@@ -314,17 +306,12 @@ class SettingsDialog(QDialog):
         right_bottom.addSpacing(4)
 
         self.cb_aw_fan = QCheckBox(" 分析水鼓风 ")
-        self.cb_aw_n2 = QCheckBox(" 分析水氮气 ")
         self.cb_tw_fan = QCheckBox(" 全水鼓风 ")
-        self.cb_tw_fan.setChecked(True)
-        self.cb_tw_n2 = QCheckBox(" 全水氮气 ")
         self.cb_retest = QCheckBox(" 开始测试后复检样品重量 ")
         self.cb_autoclear = QCheckBox(" 测试完成后自动清空测试数据 ")
 
         right_bottom.addWidget(self.cb_aw_fan)
-        right_bottom.addWidget(self.cb_aw_n2)
         right_bottom.addWidget(self.cb_tw_fan)
-        right_bottom.addWidget(self.cb_tw_n2)
         right_bottom.addWidget(self.cb_retest)
         right_bottom.addWidget(self.cb_autoclear)
 
@@ -452,11 +439,7 @@ class SettingsDialog(QDialog):
         self.le_tw_corr.setText("{:.2f}".format(float(mp.get("tw_corr", 0))))
         # 功能开关
         self.cb_aw_fan.setChecked(bool(mp.get("aw_fan", 1)))
-        self.cb_aw_n2.setChecked(bool(mp.get("aw_n2", 0)))
         self.cb_tw_fan.setChecked(bool(mp.get("tw_fan", 1)))
-        self.cb_tw_n2.setChecked(bool(mp.get("tw_n2", 0)))
-        self.cb_aw_enabled.setChecked(bool(mp.get("aw_enabled", 1)))
-        self.cb_tw_enabled.setChecked(bool(mp.get("tw_enabled", 1)))
         self.le_aw_max_cycles.setText(str(int(mp.get("aw_max_cycles", 3))))
         self.le_tw_max_cycles.setText(str(int(mp.get("tw_max_cycles", 3))))
         self.cb_retest.setChecked(bool(mp.get("retest", 0)))
@@ -492,11 +475,7 @@ class SettingsDialog(QDialog):
         self.le_tw_corr.setText("{:.2f}".format(float(d["tw_corr"])))
         # 功能开关
         self.cb_aw_fan.setChecked(bool(d["aw_fan"]))
-        self.cb_aw_n2.setChecked(bool(d.get("aw_n2", 0)))
         self.cb_tw_fan.setChecked(bool(d["tw_fan"]))
-        self.cb_tw_n2.setChecked(bool(d.get("tw_n2", 0)))
-        self.cb_aw_enabled.setChecked(bool(d.get("aw_enabled", 1)))
-        self.cb_tw_enabled.setChecked(bool(d.get("tw_enabled", 1)))
         self.le_aw_max_cycles.setText(str(int(d.get("aw_max_cycles", 3))))
         self.le_tw_max_cycles.setText(str(int(d.get("tw_max_cycles", 3))))
         self.cb_retest.setChecked(bool(d["retest"]))
@@ -536,8 +515,6 @@ class SettingsDialog(QDialog):
         kwargs["aw_low"] = float(self.le_aw_low.text() or "0")
         kwargs["aw_high"] = float(self.le_aw_high.text() or "0")
         kwargs["aw_fan"] = 1 if self.cb_aw_fan.isChecked() else 0
-        kwargs["aw_n2"] = 1 if self.cb_aw_n2.isChecked() else 0
-        kwargs["aw_enabled"] = 1 if self.cb_aw_enabled.isChecked() else 0
         kwargs["aw_max_cycles"] = int(self.le_aw_max_cycles.text() or "3")
         kwargs["aw_corr"] = float(self.le_aw_corr.text() or "0")
         # 全水
@@ -549,8 +526,6 @@ class SettingsDialog(QDialog):
         kwargs["tw_low"] = float(self.le_tw_low.text() or "0")
         kwargs["tw_high"] = float(self.le_tw_high.text() or "0")
         kwargs["tw_fan"] = 1 if self.cb_tw_fan.isChecked() else 0
-        kwargs["tw_n2"] = 1 if self.cb_tw_n2.isChecked() else 0
-        kwargs["tw_enabled"] = 1 if self.cb_tw_enabled.isChecked() else 0
         kwargs["tw_max_cycles"] = int(self.le_tw_max_cycles.text() or "3")
         kwargs["tw_corr"] = float(self.le_tw_corr.text() or "0")
         # 其他
@@ -565,8 +540,8 @@ class SettingsDialog(QDialog):
         for key in ["aw_temp", "aw_time", "aw_const_check", "aw_prec", "aw_interval",
                      "tw_temp", "tw_time", "tw_const_check", "tw_prec", "tw_interval",
                      "weigh_mode", "aw_low", "aw_high", "tw_low", "tw_high",
-                     "aw_corr", "tw_corr", "aw_fan", "aw_n2", "tw_fan", "tw_n2",
-                     "aw_enabled", "aw_max_cycles", "tw_enabled", "tw_max_cycles",
+                     "aw_corr", "tw_corr", "aw_fan", "tw_fan",
+                     "aw_max_cycles", "tw_max_cycles",
                      "retest", "autoclear"]:
             if key in kwargs:
                 preset[key] = kwargs[key]
