@@ -12,7 +12,7 @@ from PySide2.QtCore import Qt, Signal
 from PySide2.QtGui import QFont
 from button_styles import apply_button_types
 from button_styles import apply_button_types
-from db import load_params, save_params, load_techs, save_tech
+from db import load_params, save_params, load_techs, save_tech, load_method_preset, save_method_preset, FACTORY_DEFAULTS
 
 
 # ============================================================
@@ -120,10 +120,10 @@ class SettingsDialog(QDialog):
         self.rb_gb.setChecked(True)
         self.rb_kf = QRadioButton(" 快速法 ")
         self.rb_custom = QRadioButton(" 自定义 ")
-        # 选中测试方式时自动应用对应的默认参数
-        self.rb_gb.clicked.connect(self._apply_method_defaults)
-        self.rb_kf.clicked.connect(self._apply_method_defaults)
-        self.rb_custom.clicked.connect(self._apply_method_defaults)
+        # 选中测试方式时加载该方法已保存的参数（首次使用则加载工厂默认值）
+        self.rb_gb.clicked.connect(self._on_method_changed)
+        self.rb_kf.clicked.connect(self._on_method_changed)
+        self.rb_custom.clicked.connect(self._on_method_changed)
         method_layout.addWidget(self.rb_gb)
         method_layout.addWidget(self.rb_kf)
         method_layout.addWidget(self.rb_custom)
@@ -191,6 +191,10 @@ class SettingsDialog(QDialog):
         self.cb_aw_const.toggled.connect(self._on_aw_const_toggled)
         aw_layout.addRow("", self.cb_aw_const)
 
+        self.cb_aw_enabled = QCheckBox(" 启用分析水测试 ")
+        self.cb_aw_enabled.setChecked(True)
+        aw_layout.addRow("", self.cb_aw_enabled)
+
         h3 = QHBoxLayout(); h3.setSpacing(6)
         self.le_aw_prec = QLineEdit("0.0010"); self.le_aw_prec.setFixedWidth(80); self.le_aw_prec.setAlignment(Qt.AlignCenter)
         h3.addWidget(self.le_aw_prec); h3.addWidget(QLabel(" g "))
@@ -200,6 +204,11 @@ class SettingsDialog(QDialog):
         self.le_aw_interval = QLineEdit("5"); self.le_aw_interval.setFixedWidth(80); self.le_aw_interval.setAlignment(Qt.AlignCenter)
         h4.addWidget(self.le_aw_interval); h4.addWidget(QLabel(" 分钟 "))
         aw_layout.addRow(" 称量间隔 ", h4)
+
+        h_aw_cycles = QHBoxLayout(); h_aw_cycles.setSpacing(6)
+        self.le_aw_max_cycles = QLineEdit("3"); self.le_aw_max_cycles.setFixedWidth(80); self.le_aw_max_cycles.setAlignment(Qt.AlignCenter)
+        h_aw_cycles.addWidget(self.le_aw_max_cycles); h_aw_cycles.addWidget(QLabel(" 次 "))
+        aw_layout.addRow(" 最大烘干次数 ", h_aw_cycles)
 
         mid_layout.addWidget(grp_aw)
 
@@ -224,6 +233,10 @@ class SettingsDialog(QDialog):
         self.cb_tw_const.toggled.connect(self._on_tw_const_toggled)
         tw_layout.addRow("", self.cb_tw_const)
 
+        self.cb_tw_enabled = QCheckBox(" 启用全水分测试 ")
+        self.cb_tw_enabled.setChecked(True)
+        tw_layout.addRow("", self.cb_tw_enabled)
+
         h7 = QHBoxLayout(); h7.setSpacing(6)
         self.le_tw_prec = QLineEdit("0.0030"); self.le_tw_prec.setFixedWidth(80); self.le_tw_prec.setAlignment(Qt.AlignCenter)
         h7.addWidget(self.le_tw_prec); h7.addWidget(QLabel(" g "))
@@ -233,6 +246,11 @@ class SettingsDialog(QDialog):
         self.le_tw_interval = QLineEdit("5"); self.le_tw_interval.setFixedWidth(80); self.le_tw_interval.setAlignment(Qt.AlignCenter)
         h8.addWidget(self.le_tw_interval); h8.addWidget(QLabel(" 分钟 "))
         tw_layout.addRow(" 称量间隔 ", h8)
+
+        h_tw_cycles = QHBoxLayout(); h_tw_cycles.setSpacing(6)
+        self.le_tw_max_cycles = QLineEdit("3"); self.le_tw_max_cycles.setFixedWidth(80); self.le_tw_max_cycles.setAlignment(Qt.AlignCenter)
+        h_tw_cycles.addWidget(self.le_tw_max_cycles); h_tw_cycles.addWidget(QLabel(" 次 "))
+        tw_layout.addRow(" 最大烘干次数 ", h_tw_cycles)
 
         mid_layout.addWidget(grp_tw)
         main_layout.addLayout(mid_layout)
@@ -296,16 +314,17 @@ class SettingsDialog(QDialog):
         right_bottom.addSpacing(4)
 
         self.cb_aw_fan = QCheckBox(" 分析水鼓风 ")
+        self.cb_aw_n2 = QCheckBox(" 分析水氮气 ")
         self.cb_tw_fan = QCheckBox(" 全水鼓风 ")
         self.cb_tw_fan.setChecked(True)
-        self.cb_beep = QCheckBox(" 称重提示音 ")
-        self.cb_beep.setChecked(True)
+        self.cb_tw_n2 = QCheckBox(" 全水氮气 ")
         self.cb_retest = QCheckBox(" 开始测试后复检样品重量 ")
         self.cb_autoclear = QCheckBox(" 测试完成后自动清空测试数据 ")
 
         right_bottom.addWidget(self.cb_aw_fan)
+        right_bottom.addWidget(self.cb_aw_n2)
         right_bottom.addWidget(self.cb_tw_fan)
-        right_bottom.addWidget(self.cb_beep)
+        right_bottom.addWidget(self.cb_tw_n2)
         right_bottom.addWidget(self.cb_retest)
         right_bottom.addWidget(self.cb_autoclear)
 
@@ -315,6 +334,7 @@ class SettingsDialog(QDialog):
         btn_layout.setSpacing(8)
         btn_reset_pwd = QPushButton(" 密码重置 "); apply_button_types(btn_reset_pwd, "neutral")
         btn_defaults = QPushButton(" 默认值 "); apply_button_types(btn_defaults, "neutral")
+        btn_defaults.clicked.connect(self._restore_factory_defaults)
         btn_layout.addWidget(btn_reset_pwd)
         btn_layout.addWidget(btn_defaults)
         right_bottom.addLayout(btn_layout)
@@ -343,39 +363,17 @@ class SettingsDialog(QDialog):
         sc = p.get("sample_count", "")
         if sc: self.le_sample_count.setText(str(int(sc)))
         else: self.le_sample_count.clear()
-        # 测试方法
+        # 测试方法 — 恢复上次选中的方法
         m = p.get("method", "gb")
         if m == "kf": self.rb_kf.setChecked(True)
         elif m == "custom": self.rb_custom.setChecked(True)
         else: self.rb_gb.setChecked(True)
-        # 称重方式
-        wi = p.get("weigh_mode", 0)
-        if wi is not None:
-            self.cb_weigh.setCurrentIndex(int(wi))
-        # 分析水
-        self._set_val("aw_temp", p, self.le_aw_temp)
-        self._set_val("aw_time", p, self.le_aw_time)
-        self.cb_aw_const.setChecked(bool(p.get("aw_const_check", 1)))
-        self._set_val("aw_prec", p, self.le_aw_prec, "{:.4f}")
-        self._set_val("aw_interval", p, self.le_aw_interval)
-        self._set_val("aw_low", p, self.le_aw_low, "{:.4f}")
-        self._set_val("aw_high", p, self.le_aw_high, "{:.4f}")
-        self.cb_aw_fan.setChecked(bool(p.get("aw_fan", 0)))
-        self._set_val("aw_corr", p, self.le_aw_corr, "{:.2f}")
-        # 全水
-        self._set_val("tw_temp", p, self.le_tw_temp)
-        self._set_val("tw_time", p, self.le_tw_time)
-        self.cb_tw_const.setChecked(bool(p.get("tw_const_check", 1)))
-        self._set_val("tw_prec", p, self.le_tw_prec, "{:.4f}")
-        self._set_val("tw_interval", p, self.le_tw_interval)
-        self._set_val("tw_low", p, self.le_tw_low, "{:.4f}")
-        self._set_val("tw_high", p, self.le_tw_high, "{:.4f}")
-        self.cb_tw_fan.setChecked(bool(p.get("tw_fan", 1)))
-        self._set_val("tw_corr", p, self.le_tw_corr, "{:.2f}")
-        # 其他
-        self.cb_beep.setChecked(bool(p.get("beep", 1)))
-        self.cb_retest.setChecked(bool(p.get("retest", 0)))
-        self.cb_autoclear.setChecked(bool(p.get("autoclear", 0)))
+        # 从 method_presets 加载该方法已保存的参数，无记录则用工厂默认值
+        mp = load_method_preset(m)
+        if mp:
+            self._fill_from_preset(mp)
+        else:
+            self._apply_factory_defaults(m)
 
     @staticmethod
     def _set_val(key, params_dict, line_edit, fmt=None):
@@ -409,57 +407,105 @@ class SettingsDialog(QDialog):
         self.le_tw_prec.setEnabled(checked)
         self.le_tw_interval.setEnabled(checked)
 
-    def _apply_method_defaults(self):
-        """根据选中的测试方式（国标法/快速法/自定义）自动填充参数默认值。
-        国标法和自定义共用同一套默认值；快速法使用另一套。
+    # ---- 方法参数记忆逻辑 ----
+
+    def _current_method(self):
+        """返回当前选中的方法标识符"""
+        if self.rb_kf.isChecked():
+            return "kf"
+        elif self.rb_custom.isChecked():
+            return "custom"
+        return "gb"
+
+    def _on_method_changed(self):
+        """切换测试方式时，优先加载该方法已保存的参数；
+        首次使用（无保存记录）才使用工厂默认值。
+        """
+        method = self._current_method()
+        mp = load_method_preset(method)
+        if mp:
+            self._fill_from_preset(mp)
+        else:
+            self._apply_factory_defaults(method)
+
+    def _fill_from_preset(self, mp):
+        """将 method_presets 记录填充到所有控件"""
+        # 分析水控温控时
+        self.le_aw_temp.setText(str(int(mp.get("aw_temp", 105))))
+        self.le_aw_time.setText(str(int(mp.get("aw_time", 60))))
+        self.cb_aw_const.setChecked(bool(mp.get("aw_const_check", 1)))
+        self.le_aw_prec.setText("{:.4f}".format(float(mp.get("aw_prec", 0.001))))
+        self.le_aw_interval.setText(str(int(mp.get("aw_interval", 3))))
+        # 全水控温控时
+        self.le_tw_temp.setText(str(int(mp.get("tw_temp", 105))))
+        self.le_tw_time.setText(str(int(mp.get("tw_time", 60))))
+        self.cb_tw_const.setChecked(bool(mp.get("tw_const_check", 1)))
+        self.le_tw_prec.setText("{:.4f}".format(float(mp.get("tw_prec", 0.001))))
+        self.le_tw_interval.setText(str(int(mp.get("tw_interval", 3))))
+        # 称重与校正
+        self.cb_weigh.setCurrentIndex(int(mp.get("weigh_mode", 0)))
+        self.le_aw_low.setText("{:.4f}".format(float(mp.get("aw_low", 0.9))))
+        self.le_aw_high.setText("{:.4f}".format(float(mp.get("aw_high", 1.1))))
+        self.le_tw_low.setText("{:.4f}".format(float(mp.get("tw_low", 9.0))))
+        self.le_tw_high.setText("{:.4f}".format(float(mp.get("tw_high", 12.0))))
+        self.le_aw_corr.setText("{:.2f}".format(float(mp.get("aw_corr", 0))))
+        self.le_tw_corr.setText("{:.2f}".format(float(mp.get("tw_corr", 0))))
+        # 功能开关
+        self.cb_aw_fan.setChecked(bool(mp.get("aw_fan", 1)))
+        self.cb_aw_n2.setChecked(bool(mp.get("aw_n2", 0)))
+        self.cb_tw_fan.setChecked(bool(mp.get("tw_fan", 1)))
+        self.cb_tw_n2.setChecked(bool(mp.get("tw_n2", 0)))
+        self.cb_aw_enabled.setChecked(bool(mp.get("aw_enabled", 1)))
+        self.cb_tw_enabled.setChecked(bool(mp.get("tw_enabled", 1)))
+        self.le_aw_max_cycles.setText(str(int(mp.get("aw_max_cycles", 3))))
+        self.le_tw_max_cycles.setText(str(int(mp.get("tw_max_cycles", 3))))
+        self.cb_retest.setChecked(bool(mp.get("retest", 0)))
+        self.cb_autoclear.setChecked(bool(mp.get("autoclear", 1)))
+
+    def _apply_factory_defaults(self, method=None):
+        """应用指定方法的工厂默认值到控件。
         不改变的值：测试单位、化验员输入框。
         """
-        is_fast = self.rb_kf.isChecked()  # 快速法 vs 国标法/自定义
+        if method is None:
+            method = self._current_method()
+        d = FACTORY_DEFAULTS.get(method, FACTORY_DEFAULTS["gb"])
 
-        if is_fast:
-            # ---- 快速法默认值 ----
-            # 分析水控温控时
-            self.le_aw_temp.setText("145")
-            self.le_aw_time.setText("10")
-            self.cb_aw_const.setChecked(False)
-            self.le_aw_prec.setText("0.0010")
-            self.le_aw_interval.setText("3")
-            # 全水控温控时
-            self.le_tw_temp.setText("145")
-            self.le_tw_time.setText("30")
-            self.cb_tw_const.setChecked(False)
-            self.le_tw_prec.setText("0.0010")
-            self.le_tw_interval.setText("3")
-        else:
-            # ---- 国标法 / 自定义 默认值 ----
-            # 分析水控温控时
-            self.le_aw_temp.setText("105")
-            self.le_aw_time.setText("60")
-            self.cb_aw_const.setChecked(True)
-            self.le_aw_prec.setText("0.0010")
-            self.le_aw_interval.setText("3")
-            # 全水控温控时
-            self.le_tw_temp.setText("105")
-            self.le_tw_time.setText("60")
-            self.cb_tw_const.setChecked(True)
-            self.le_tw_prec.setText("0.0010")
-            self.le_tw_interval.setText("3")
+        # 分析水控温控时
+        self.le_aw_temp.setText(str(int(d["aw_temp"])))
+        self.le_aw_time.setText(str(int(d["aw_time"])))
+        self.cb_aw_const.setChecked(bool(d["aw_const_check"]))
+        self.le_aw_prec.setText("{:.4f}".format(float(d["aw_prec"])))
+        self.le_aw_interval.setText(str(int(d["aw_interval"])))
+        # 全水控温控时
+        self.le_tw_temp.setText(str(int(d["tw_temp"])))
+        self.le_tw_time.setText(str(int(d["tw_time"])))
+        self.cb_tw_const.setChecked(bool(d["tw_const_check"]))
+        self.le_tw_prec.setText("{:.4f}".format(float(d["tw_prec"])))
+        self.le_tw_interval.setText(str(int(d["tw_interval"])))
+        # 称重与校正
+        self.cb_weigh.setCurrentIndex(int(d["weigh_mode"]))
+        self.le_aw_low.setText("{:.4f}".format(float(d["aw_low"])))
+        self.le_aw_high.setText("{:.4f}".format(float(d["aw_high"])))
+        self.le_tw_low.setText("{:.4f}".format(float(d["tw_low"])))
+        self.le_tw_high.setText("{:.4f}".format(float(d["tw_high"])))
+        self.le_aw_corr.setText("{:.2f}".format(float(d["aw_corr"])))
+        self.le_tw_corr.setText("{:.2f}".format(float(d["tw_corr"])))
+        # 功能开关
+        self.cb_aw_fan.setChecked(bool(d["aw_fan"]))
+        self.cb_aw_n2.setChecked(bool(d.get("aw_n2", 0)))
+        self.cb_tw_fan.setChecked(bool(d["tw_fan"]))
+        self.cb_tw_n2.setChecked(bool(d.get("tw_n2", 0)))
+        self.cb_aw_enabled.setChecked(bool(d.get("aw_enabled", 1)))
+        self.cb_tw_enabled.setChecked(bool(d.get("tw_enabled", 1)))
+        self.le_aw_max_cycles.setText(str(int(d.get("aw_max_cycles", 3))))
+        self.le_tw_max_cycles.setText(str(int(d.get("tw_max_cycles", 3))))
+        self.cb_retest.setChecked(bool(d["retest"]))
+        self.cb_autoclear.setChecked(bool(d["autoclear"]))
 
-        # ---- 称重与校正参数（两种模式相同）----
-        self.cb_weigh.setCurrentIndex(0)  # 批量称坩埚，批量称样品
-        self.le_tw_low.setText("9.0000")
-        self.le_tw_high.setText("12.0000")
-        self.le_aw_low.setText("0.9000")
-        self.le_aw_high.setText("1.1000")
-        self.le_tw_corr.setText("0.00")
-        self.le_aw_corr.setText("0.00")
-
-        # ---- 功能开关选项（两种模式相同）----
-        self.cb_aw_fan.setChecked(True)
-        self.cb_tw_fan.setChecked(True)
-        self.cb_beep.setChecked(True)
-        self.cb_retest.setChecked(False)
-        self.cb_autoclear.setChecked(True)
+    def _restore_factory_defaults(self):
+        """默认值按钮：恢复当前方法的工厂默认值"""
+        method = self._current_method()
+        self._apply_factory_defaults(method)
 
     def save_all_params(self):
         """保存当前对话框所有参数到数据库（可在关闭前调用）"""
@@ -490,6 +536,9 @@ class SettingsDialog(QDialog):
         kwargs["aw_low"] = float(self.le_aw_low.text() or "0")
         kwargs["aw_high"] = float(self.le_aw_high.text() or "0")
         kwargs["aw_fan"] = 1 if self.cb_aw_fan.isChecked() else 0
+        kwargs["aw_n2"] = 1 if self.cb_aw_n2.isChecked() else 0
+        kwargs["aw_enabled"] = 1 if self.cb_aw_enabled.isChecked() else 0
+        kwargs["aw_max_cycles"] = int(self.le_aw_max_cycles.text() or "3")
         kwargs["aw_corr"] = float(self.le_aw_corr.text() or "0")
         # 全水
         kwargs["tw_temp"] = float(self.le_tw_temp.text() or "0")
@@ -500,14 +549,29 @@ class SettingsDialog(QDialog):
         kwargs["tw_low"] = float(self.le_tw_low.text() or "0")
         kwargs["tw_high"] = float(self.le_tw_high.text() or "0")
         kwargs["tw_fan"] = 1 if self.cb_tw_fan.isChecked() else 0
+        kwargs["tw_n2"] = 1 if self.cb_tw_n2.isChecked() else 0
+        kwargs["tw_enabled"] = 1 if self.cb_tw_enabled.isChecked() else 0
+        kwargs["tw_max_cycles"] = int(self.le_tw_max_cycles.text() or "3")
         kwargs["tw_corr"] = float(self.le_tw_corr.text() or "0")
         # 其他
         # 串口号
         kwargs["com_port"] = self.cb_com_port.currentText()
-        kwargs["beep"] = 1 if self.cb_beep.isChecked() else 0
         kwargs["retest"] = 1 if self.cb_retest.isChecked() else 0
         kwargs["autoclear"] = 1 if self.cb_autoclear.isChecked() else 0
         save_params(**kwargs)
+        # 同时保存方法参数到 method_presets
+        method = kwargs.get("method", self._current_method())
+        preset = {}
+        for key in ["aw_temp", "aw_time", "aw_const_check", "aw_prec", "aw_interval",
+                     "tw_temp", "tw_time", "tw_const_check", "tw_prec", "tw_interval",
+                     "weigh_mode", "aw_low", "aw_high", "tw_low", "tw_high",
+                     "aw_corr", "tw_corr", "aw_fan", "aw_n2", "tw_fan", "tw_n2",
+                     "aw_enabled", "aw_max_cycles", "tw_enabled", "tw_max_cycles",
+                     "retest", "autoclear"]:
+            if key in kwargs:
+                preset[key] = kwargs[key]
+        if preset:
+            save_method_preset(method, **preset)
 
     def closeEvent(self, event):
         """关闭时自动保存所有参数"""

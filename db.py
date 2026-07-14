@@ -37,12 +37,14 @@ def _init_db(conn):
             aw_const_check INTEGER DEFAULT 1, aw_prec REAL DEFAULT 0.0010,
             aw_interval INTEGER DEFAULT 5,
             aw_low REAL DEFAULT 0.9000, aw_high REAL DEFAULT 1.1000,
-            aw_fan INTEGER DEFAULT 0, aw_corr REAL DEFAULT 0.00,
+            aw_fan INTEGER DEFAULT 0, aw_n2 INTEGER DEFAULT 0, aw_corr REAL DEFAULT 0.00,
+            aw_enabled INTEGER DEFAULT 1, aw_max_cycles INTEGER DEFAULT 3,
             tw_temp REAL DEFAULT 105, tw_time INTEGER DEFAULT 60,
             tw_const_check INTEGER DEFAULT 1, tw_prec REAL DEFAULT 0.0030,
             tw_interval INTEGER DEFAULT 5,
             tw_low REAL DEFAULT 9.0000, tw_high REAL DEFAULT 12.0000,
-            tw_fan INTEGER DEFAULT 1, tw_corr REAL DEFAULT 0.00,
+            tw_fan INTEGER DEFAULT 1, tw_n2 INTEGER DEFAULT 0, tw_corr REAL DEFAULT 0.00,
+            tw_enabled INTEGER DEFAULT 1, tw_max_cycles INTEGER DEFAULT 3,
             beep INTEGER DEFAULT 1, retest INTEGER DEFAULT 0,
             autoclear INTEGER DEFAULT 0, sample_count INTEGER DEFAULT 24, hy_current TEXT DEFAULT ""
         );
@@ -65,9 +67,11 @@ def _init_db(conn):
             method TEXT,
             weigh_mode INTEGER,
             aw_temp REAL, aw_time INTEGER, aw_const_check INTEGER, aw_prec REAL, aw_interval INTEGER,
-            aw_low REAL, aw_high REAL, aw_fan INTEGER, aw_corr REAL,
+            aw_low REAL, aw_high REAL, aw_fan INTEGER, aw_n2 INTEGER, aw_corr REAL,
+            aw_enabled INTEGER, aw_max_cycles INTEGER,
             tw_temp REAL, tw_time INTEGER, tw_const_check INTEGER, tw_prec REAL, tw_interval INTEGER,
-            tw_low REAL, tw_high REAL, tw_fan INTEGER, tw_corr REAL,
+            tw_low REAL, tw_high REAL, tw_fan INTEGER, tw_n2 INTEGER, tw_corr REAL,
+            tw_enabled INTEGER, tw_max_cycles INTEGER,
             beep INTEGER, retest INTEGER, autoclear INTEGER,
             status TEXT DEFAULT 'pending'
         );
@@ -138,6 +142,21 @@ def _init_db(conn):
             calculated_at TEXT DEFAULT (datetime('now','localtime')),
             FOREIGN KEY (experiment_id) REFERENCES experiments(id) ON DELETE CASCADE
         );
+
+        CREATE TABLE IF NOT EXISTS method_presets (
+            method TEXT PRIMARY KEY,
+            aw_temp REAL, aw_time INTEGER,
+            aw_const_check INTEGER, aw_prec REAL, aw_interval INTEGER,
+            tw_temp REAL, tw_time INTEGER,
+            tw_const_check INTEGER, tw_prec REAL, tw_interval INTEGER,
+            weigh_mode INTEGER,
+            aw_low REAL, aw_high REAL, tw_low REAL, tw_high REAL,
+            aw_corr REAL, tw_corr REAL,
+            aw_fan INTEGER, aw_n2 INTEGER, tw_fan INTEGER, tw_n2 INTEGER,
+            aw_enabled INTEGER, aw_max_cycles INTEGER,
+            tw_enabled INTEGER, tw_max_cycles INTEGER,
+            retest INTEGER, autoclear INTEGER
+        );
     """)
 
     # 兼容旧库新增字段
@@ -150,6 +169,76 @@ def _init_db(conn):
         cur.execute("ALTER TABLE params ADD COLUMN com_port TEXT DEFAULT ''")
     except sqlite3.OperationalError:
         pass
+    # 新增字段兼容
+    for col, spec in [("aw_enabled", "INTEGER DEFAULT 1"),
+                       ("aw_max_cycles", "INTEGER DEFAULT 3"),
+                       ("aw_n2", "INTEGER DEFAULT 0"),
+                       ("tw_enabled", "INTEGER DEFAULT 1"),
+                       ("tw_max_cycles", "INTEGER DEFAULT 3"),
+                       ("tw_n2", "INTEGER DEFAULT 0")]:
+        try:
+            cur.execute("ALTER TABLE params ADD COLUMN %s %s" % (col, spec))
+        except sqlite3.OperationalError:
+            pass
+
+
+# ========== 工厂默认值 ==========
+
+FACTORY_DEFAULTS = {
+    "gb": {
+        "aw_temp": 105, "aw_time": 60, "aw_const_check": 1, "aw_prec": 0.0010, "aw_interval": 3,
+        "tw_temp": 105, "tw_time": 60, "tw_const_check": 1, "tw_prec": 0.0010, "tw_interval": 3,
+        "weigh_mode": 0,
+        "aw_low": 0.9000, "aw_high": 1.1000, "tw_low": 9.0000, "tw_high": 12.0000,
+        "aw_corr": 0.00, "tw_corr": 0.00,
+        "aw_fan": 1, "aw_n2": 0, "aw_enabled": 1, "aw_max_cycles": 3,
+        "tw_fan": 1, "tw_n2": 0, "tw_enabled": 1, "tw_max_cycles": 3,
+        "retest": 0, "autoclear": 1,
+    },
+    "kf": {
+        "aw_temp": 145, "aw_time": 10, "aw_const_check": 0, "aw_prec": 0.0010, "aw_interval": 3,
+        "tw_temp": 145, "tw_time": 30, "tw_const_check": 0, "tw_prec": 0.0010, "tw_interval": 3,
+        "weigh_mode": 0,
+        "aw_low": 0.9000, "aw_high": 1.1000, "tw_low": 9.0000, "tw_high": 12.0000,
+        "aw_corr": 0.00, "tw_corr": 0.00,
+        "aw_fan": 1, "aw_n2": 0, "aw_enabled": 1, "aw_max_cycles": 3,
+        "tw_fan": 1, "tw_n2": 0, "tw_enabled": 1, "tw_max_cycles": 3,
+        "retest": 0, "autoclear": 1,
+    },
+    "custom": {
+        "aw_temp": 105, "aw_time": 60, "aw_const_check": 1, "aw_prec": 0.0010, "aw_interval": 3,
+        "tw_temp": 105, "tw_time": 60, "tw_const_check": 1, "tw_prec": 0.0010, "tw_interval": 3,
+        "weigh_mode": 0,
+        "aw_low": 0.9000, "aw_high": 1.1000, "tw_low": 9.0000, "tw_high": 12.0000,
+        "aw_corr": 0.00, "tw_corr": 0.00,
+        "aw_fan": 1, "aw_n2": 0, "aw_enabled": 1, "aw_max_cycles": 3,
+        "tw_fan": 1, "tw_n2": 0, "tw_enabled": 1, "tw_max_cycles": 3,
+        "retest": 0, "autoclear": 1,
+    },
+}
+
+# ========== 方法参数持久化 ==========
+
+def load_method_preset(method):
+    """读取指定方法的保存参数，无记录返回 None"""
+    conn = get_conn()
+    row = conn.execute("SELECT * FROM method_presets WHERE method=?", (method,)).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def save_method_preset(method, **kwargs):
+    """保存指定方法的参数（INSERT OR REPLACE）"""
+    conn = get_conn()
+    cols = ["method"] + list(kwargs.keys())
+    ph = ["?"] * len(cols)
+    vals = [method] + list(kwargs.values())
+    conn.execute(
+        f"INSERT OR REPLACE INTO method_presets ({', '.join(cols)}) VALUES ({', '.join(ph)})",
+        vals
+    )
+    conn.commit()
+    conn.close()
 
 
 # ========== 参数读写 ==========
@@ -237,6 +326,29 @@ def save_all_samples(data_list):
     conn.close()
 
 
+def clear_sample_row(row_idx):
+    """清除指定行的称量数据（坩埚重 + 样品重）
+
+    row_idx: 0-based table row 索引（第0行=校正坩埚, 第1行=1号样品...）
+    同时清除 experiment_samples 和 samples 两张表的数据。
+    """
+    conn = get_conn()
+    # 清除 experiment_samples 表
+    eid = get_latest_experiment_id()
+    conn.execute(
+        "UPDATE experiment_samples SET tare_weight=NULL, sample_weight=NULL "
+        "WHERE experiment_id=? AND row_idx=?",
+        (eid, row_idx)
+    )
+    # 清除 samples 表 (row_id = row_idx + 1, 因为 samples.row_id 从1开始)
+    conn.execute(
+        "UPDATE samples SET tare_weight=NULL, sample_weight=NULL WHERE row_id=?",
+        (row_idx + 1,)
+    )
+    conn.commit()
+    conn.close()
+
+
 # ========== 调试入口 ==========
 if __name__ == "__main__":
     # 测试
@@ -258,11 +370,11 @@ def create_experiment(batch_no="", tech="", unit="", method="gb", weigh_mode=0):
         INSERT INTO experiments (
             batch_no, tech, unit, method, weigh_mode,
             aw_temp, aw_time, aw_const_check, aw_prec, aw_interval,
-            aw_low, aw_high, aw_fan, aw_corr,
+            aw_low, aw_high, aw_fan, aw_n2, aw_corr, aw_enabled, aw_max_cycles,
             tw_temp, tw_time, tw_const_check, tw_prec, tw_interval,
-            tw_low, tw_high, tw_fan, tw_corr,
+            tw_low, tw_high, tw_fan, tw_n2, tw_corr, tw_enabled, tw_max_cycles,
             beep, retest, autoclear
-        ) VALUES (?,?,?,?,?,  ?,?,?,?,?,  ?,?,?,?,  ?,?,?,?,?,  ?,?,?,?,  ?,?,?)
+        ) VALUES (?,?,?,?,?,  ?,?,?,?,?,  ?,?,?,?,?,?,?,  ?,?,?,?,?,  ?,?,?,?,?,?,?,  ?,?,?)
     """, (
         batch_no or datetime.datetime.now().strftime("%Y%m%d_%H%M%S"),
         tech or params.get("hy_current", ""),
@@ -270,9 +382,9 @@ def create_experiment(batch_no="", tech="", unit="", method="gb", weigh_mode=0):
         method or params.get("method", "gb"),
         weigh_mode if weigh_mode is not None else params.get("weigh_mode", 0),
         params.get("aw_temp", 105), params.get("aw_time", 60), params.get("aw_const_check", 1), params.get("aw_prec", 0.001), params.get("aw_interval", 5),
-        params.get("aw_low", 0.9), params.get("aw_high", 1.1), params.get("aw_fan", 0), params.get("aw_corr", 0),
+        params.get("aw_low", 0.9), params.get("aw_high", 1.1), params.get("aw_fan", 0), params.get("aw_n2", 0), params.get("aw_corr", 0), params.get("aw_enabled", 1), params.get("aw_max_cycles", 3),
         params.get("tw_temp", 105), params.get("tw_time", 60), params.get("tw_const_check", 1), params.get("tw_prec", 0.003), params.get("tw_interval", 5),
-        params.get("tw_low", 9.0), params.get("tw_high", 12.0), params.get("tw_fan", 1), params.get("tw_corr", 0),
+        params.get("tw_low", 9.0), params.get("tw_high", 12.0), params.get("tw_fan", 1), params.get("tw_n2", 0), params.get("tw_corr", 0), params.get("tw_enabled", 1), params.get("tw_max_cycles", 3),
         params.get("beep", 1), params.get("retest", 0), params.get("autoclear", 0),
     ))
     conn.commit()

@@ -20,6 +20,7 @@ _MAX_BYTES = 5 * 1024 * 1024
 _FILE_TAGS = frozenset([
     "[SERIAL]", "[WEIGH]", "[HARDWARE]", "[UPLINK]",
     "[DB-WEIGH]", "[DB]", "[MAIN]", "[SETTINGS]",
+    "[TABLE]",
 ])
 
 def _ensure_log_dir():

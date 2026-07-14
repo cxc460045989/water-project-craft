@@ -11,7 +11,7 @@ from PySide2.QtWidgets import (
     QHeaderView, QAbstractItemView, QSizePolicy, QFrame, QStyle, QProgressBar,
     QMessageBox,
 )
-from PySide2.QtCore import Qt, QSize, QEvent, QTimer
+from PySide2.QtCore import Qt, QSize, QEvent, QTimer, QItemSelectionModel
 from PySide2.QtGui import QFont, QKeySequence
 from db import load_params, save_params, load_techs
 from button_styles import BUTTON_QSS, apply_button_types
@@ -505,28 +505,19 @@ class MoistureAnalyzer(QMainWindow):
         self.btn_append.setEnabled(True)
         self.progress_label.setText("")
         if self._table:
-            from db import load_latest_samples
             self._restore_samples_from_db(self._table)
         if success:
             self.progress_data.setText("追加样品完成")
         else:
             self.progress_data.setText("追加失败: " + msg)
-        if hasattr(self, "_append_thread") and self._append_thread:
-            self._append_thread.quit()
-            self._append_thread.wait(3000)
-            self._append_thread = None
-            self._append_worker = None
+        self._append_worker = None
 
     def _on_append_error(self, msg):
         """追加样品错误回调"""
         self.btn_append.setEnabled(True)
         self.progress_label.setText("")
         self.progress_data.setText("错误: " + msg)
-        if hasattr(self, "_append_thread") and self._append_thread:
-            self._append_thread.quit()
-            self._append_thread.wait(3000)
-            self._append_thread = None
-            self._append_worker = None
+        self._append_worker = None
 
 
 
@@ -637,7 +628,9 @@ class MoistureAnalyzer(QMainWindow):
         t.verticalHeader().setDefaultSectionSize(36)
         t.verticalHeader().setMinimumSectionSize(30)
         t.verticalHeader().setVisible(True)
-        t.setSelectionBehavior(QAbstractItemView.SelectItems)
+        t.verticalHeader().setDefaultAlignment(Qt.AlignCenter)
+        t.verticalHeader().setFixedWidth(50)  # 加宽防点击溢出到 col 0
+        t.setSelectionBehavior(QAbstractItemView.SelectRows)
         t.setSelectionMode(QAbstractItemView.ExtendedSelection)
         t.setEditTriggers(QAbstractItemView.CurrentChanged | QAbstractItemView.EditKeyPressed)
         t.setTabKeyNavigation(True)
@@ -663,6 +656,9 @@ class MoistureAnalyzer(QMainWindow):
                         item.setFlags(item.flags() & ~Qt.ItemIsEditable)
         self._table = t; t.installEventFilter(self); t.cellDoubleClicked.connect(self._on_cell_double_clicked)
         t.cellChanged.connect(self._on_cell_changed)
+        t.itemSelectionChanged.connect(self._on_selection_changed)
+        self._vheader = t.verticalHeader()  # 缓存引用，PySide2 每次调用 verticalHeader() 返回新 Python 包装对象
+        self._vheader.installEventFilter(self)
         pl.addWidget(t)
 
     def _fill_table(self, t):
@@ -779,7 +775,7 @@ class MoistureAnalyzer(QMainWindow):
 
     # ---- 重新称量回退入口 ----
     def _on_reweigh_flow(self):
-        """重新称量：使用原有批量称重流程，只称不合格样品，合格跳过"""
+        """重新称量：直接关盖→称量不合格样品，跳过准备阶段和放样提示"""
         from weigh_dialog import WeighDialog
         from weigh_controller import WeighController
         from weight_check_dialog import WeightCheckDialog
@@ -820,15 +816,10 @@ class MoistureAnalyzer(QMainWindow):
         ctrl.set_reweigh_rows(failed_rows)
 
         def on_weigh_progress(info):
-            if info["phase"] == "tare":
-                dlg.show_weighing(info["row"], info["name"], info["weight"])
-            else:
-                dlg.show_weighing_sample(info["row"], info["name"], info["weight"])
+            dlg.show_weighing_sample(info["row"], info["name"], info["weight"])
 
         def on_weigh_done(phase):
-            if phase == "tare":
-                ctrl.show_add_sample_prompt()
-            elif phase == "sample":
+            if phase == "sample":
                 failed_samples = []
                 for r in range(1, self._table.rowCount()):
                     name_item = self._table.item(r, 0)
@@ -851,20 +842,29 @@ class MoistureAnalyzer(QMainWindow):
                     check_dlg.reweigh_clicked.connect(self._on_reweigh_flow)
                     check_dlg.exec_()
 
-        def on_add_sample_prompt():
-            dlg.show_add_sample_prompt()
-
         ctrl.sig_weighing_progress.connect(on_weigh_progress)
         ctrl.sig_weighing_done.connect(on_weigh_done)
-        ctrl.sig_add_sample_prompt.connect(on_add_sample_prompt)
         ctrl.sig_status_msg.connect(dlg.show_status)
         ctrl.sig_error.connect(lambda msg: QMessageBox.warning(self, "称量错误", msg))
 
-        dlg.start_sample_clicked.connect(ctrl.start_reweigh_sample)
-
-        ctrl.start_reweigh_tare(all_valid)
+        # 直接启动：关盖→称量不合格样品
+        ctrl.start_reweigh_direct(all_valid)
         dlg.exec_()
         ctrl.stop()
+    # ---- table selection callback ----
+    def _on_selection_changed(self):
+        """选中行变化回调：打印当前选中行数据"""
+        indexes = self._table.selectionModel().selectedRows()
+        if not indexes:
+            return
+        row = indexes[0].row()
+        name_item = self._table.item(row, 0)
+        mode_item = self._table.item(row, 1)
+        name = name_item.text().strip() if name_item and name_item.text().strip() else "(空)"
+        mode = mode_item.text().strip() if mode_item and mode_item.text().strip() else "-"
+        sel_count = len(indexes)
+        logger.info("[TABLE] 选中行: row=%d | 样品=%s | 模式=%s | 共选中%d行" % (row + 1, name, mode, sel_count))
+
     # ---- table real-time persistence ----
     def _on_cell_changed(self, row, col):
         import datetime
@@ -1057,6 +1057,19 @@ class MoistureAnalyzer(QMainWindow):
         # 弹出(选择)按钮布局
 
     def eventFilter(self, obj, event):
+        if (self._table is not None
+                and hasattr(self, '_vheader') and obj is self._vheader
+                and event.type() in (QEvent.MouseButtonPress, QEvent.MouseButtonRelease)):
+            # 点击序号列：用 selectionModel().select(Rows) 选中整行，不改变 currentIndex，
+            # 因此不会触发 CurrentChanged → col 0 不会进入编辑
+            if event.type() == QEvent.MouseButtonRelease:
+                return True
+            row = self._vheader.logicalIndexAt(event.pos().y())
+            if row >= 0:
+                self._table.selectionModel().select(
+                    self._table.model().index(row, 0),
+                    QItemSelectionModel.ClearAndSelect | QItemSelectionModel.Rows)
+            return True
         if obj is self._table and event.type() == QEvent.KeyPress:
             k = event.key(); m = event.modifiers()
             if k == Qt.Key_C and m == Qt.ControlModifier:
@@ -1320,50 +1333,141 @@ class MoistureAnalyzer(QMainWindow):
             dlg.exec_()
             ctrl.stop()
         elif name == "追加样品":
+            from weigh_dialog import WeighDialog
+            from weigh_controller import WeighController
+            # ---- 1. 选中行校验 ----
+            sel = self._table.selectedIndexes()
+            if not sel:
+                QMessageBox.warning(self, "提示", "请先选择要追加的样品行")
+                return
+            target_row = sel[0].row()
+            if target_row < 1:
+                QMessageBox.warning(self, "提示", "第0行为校正坩埚，请选择有效样品行（第1行起）")
+                return
+
+            # ---- 2. 读取样品名和模式 ----
+            name_item = self._table.item(target_row, 0)
+            sample_name = name_item.text().strip() if name_item and name_item.text().strip() else ""
+            mode_item = self._table.item(target_row, 1)
+            mode = mode_item.text().strip() if mode_item and mode_item.text() else "分析水"
+
+            # ---- 3. 数据检查 + 清除确认 ----
+            tare_item = self._table.item(target_row, 2)
+            sample_item = self._table.item(target_row, 3)
+            has_tare = tare_item and tare_item.text().strip()
+            has_sample = sample_item and sample_item.text().strip()
+            if has_tare or has_sample:
+                from confirm_dialog import ConfirmDialog
+                if not ConfirmDialog.confirm(
+                    self,
+                    "第%d行「%s」已有称量数据，确定清除后重新追加？" % (target_row + 1, sample_name or "未命名"),
+                    title="追加样品确认", danger=True
+                ):
+                    return
+                from db import clear_sample_row
+                clear_sample_row(target_row)
+                if has_tare:
+                    tare_item.setText("")
+                if has_sample:
+                    sample_item.setText("")
+
+            # ---- 4. 禁用按钮，创建共用弹窗 ----
             self.btn_append.setEnabled(False)
             self.progress_label.setText("追加样品")
             self.progress_data.setText("启动追加样品流程...")
-            # 获取当前未使用的第一个样位
-            target_row = 1
-            if self._table:
-                for r in range(1, self._table.rowCount()):
-                    item = self._table.item(r, 3)
-                    if not item or not item.text().strip():
-                        target_row = r
-                        break
-                else:
-                    target_row = self._table.rowCount() - 1
-            _name_item = self._table.item(target_row, 0) if self._table else None
-            sample_name = _name_item.text().strip() if _name_item and _name_item.text().strip() else ""
-            # 从数据库读取重量范围
-            from db import load_params
-            params = load_params()
-            # 根据样品模式选择范围
-            _mode_item = self._table.item(target_row, 1) if self._table else None
-            mode = _mode_item.text().strip() if _mode_item and _mode_item.text().strip() else ""
-            if mode == "全水":
-                lo = float(params.get("tw_low", 9.0))
-                hi = float(params.get("tw_high", 12.0))
-            else:
-                lo = float(params.get("aw_low", 0.9))
-                hi = float(params.get("aw_high", 1.1))
-            # 启动追加样品Worker
-            from sample_append import SampleAppendWorker
-            from PySide2.QtCore import QThread
-            self._append_thread = QThread(self)
-            self._append_worker = SampleAppendWorker(self.serial_mgr)
-            self._append_worker.moveToThread(self._append_thread)
-            self._append_thread.started.connect(
-                lambda: self._append_worker.start_append(target_row, lo, hi, sample_name))
-            self._append_worker.sig_status_update.connect(self.progress_data.setText)
-            self._append_worker.sig_weight_update.connect(
-                lambda w: self.progress_data.setText(
-                    "实时重量: %.4fg" % w) if self._append_worker and getattr(self._append_worker, "_tare_weight", 0) > 0 else None)
-            self._append_worker.sig_sample_weight_update.connect(
-                lambda w: self.progress_data.setText("样品重: %.4fg" % w))
-            self._append_worker.sig_finished.connect(self._on_append_finished)
-            self._append_worker.sig_error.connect(self._on_append_error)
-            self._append_thread.start()
+            dlg = WeighDialog(self)
+            dlg.enable_cancel(True)
+
+            # ============================================================
+            # 阶段1: 单坩埚称量（AppendSampleWorker）
+            # ============================================================
+            from append_sample_worker import AppendSampleWorker
+            self._append_worker = AppendSampleWorker(
+                self.serial_mgr, self._table, target_row, sample_name, mode)
+
+            def on_phase1_status(msg):
+                dlg.show_status(msg)
+                self.progress_data.setText(msg)
+
+            def on_phase1_progress(info):
+                if info["phase"] == "tare":
+                    dlg.show_weighing(info["row"], info["name"], info["weight"])
+
+            def on_phase1_done(success, msg):
+                self._append_worker = None
+                if not success:
+                    self._on_append_finished(False, msg)
+                    dlg.reject()
+                    return
+                # 开盖完成，直接进入样品称量（不显示中间UI）
+                _start_phase2()
+
+            def on_phase1_error(msg):
+                QMessageBox.warning(self, "错误", msg)
+                self._on_append_error(msg)
+                self._append_worker = None
+                dlg.reject()
+
+            self._append_worker.sig_status_msg.connect(on_phase1_status)
+            self._append_worker.sig_progress.connect(on_phase1_progress)
+            self._append_worker.sig_done.connect(on_phase1_done)
+            self._append_worker.sig_error.connect(on_phase1_error)
+            dlg.rejected.connect(self._append_worker.stop)
+
+            # ============================================================
+            # 阶段2: 单样品称量（复用 WeighController）
+            # ============================================================
+            def _start_phase2():
+                valid_rows = [target_row]
+                ctrl = WeighController(self)
+                ctrl.set_table(self._table)
+                ctrl.set_serial_manager(self.serial_mgr)
+
+                def on_progress(info):
+                    if info["phase"] == "individual":
+                        dlg.show_individual_weighing(info["row"], info["name"], info["weight"])
+
+                def on_done(phase):
+                    if phase == "sample":
+                        self._on_append_finished(True, "追加样品完成")
+                        dlg.accept()
+
+                def on_real_time(weight):
+                    dlg.update_real_time_weight(weight)
+                    self.progress_data.setText("样品重: %.4fg" % weight)
+
+                def on_single_done(row, weight):
+                    dlg.show_single_weigh_done(row, weight)
+                    self.progress_data.setText("%d号样品重: %.4fg" % (row + 1, weight))
+
+                def on_range_warning(name, weight, lo, hi):
+                    dlg.show_individual_range_warning(lo, hi)
+                    self.progress_data.setText("重量超限 %.4fg (%.4f-%.4f)" % (weight, lo, hi))
+
+                ctrl.sig_weighing_progress.connect(on_progress)
+                ctrl.sig_weighing_done.connect(on_done)
+                ctrl.sig_status_msg.connect(dlg.show_status)
+                ctrl.sig_error.connect(lambda msg: QMessageBox.warning(self, "称量错误", msg))
+                ctrl.sig_real_time_sample_weight.connect(on_real_time)
+                ctrl.sig_single_weigh_done.connect(on_single_done)
+                ctrl.sig_weight_out_of_range.connect(on_range_warning)
+                ctrl.sig_confirm_weigh.connect(lambda row, name, w: dlg.show_individual_weighing(row, name, w))
+                dlg.confirm_weigh_clicked.connect(ctrl.confirm_current_weigh)
+                dlg.rejected.connect(ctrl.stop)
+
+                # 测试 mock: 无天平时模拟合理样品重
+                mock_w = 10.0 if mode == "全水" else 1.0
+                ctrl.set_mock_sample_weight(mock_w)
+                ctrl.start_individual_sample_weigh(valid_rows)
+
+            # ---- 启动阶段1 ----
+            self._append_worker.start()
+            dlg.exec_()
+            # 清理
+            if self._append_worker and self._append_worker.isRunning():
+                self._append_worker.stop()
+                self._append_worker.wait(3000)
+            self._append_worker = None
             return
 
         elif name == "全水全选":

@@ -13,6 +13,7 @@
 """
 
 import sys, os
+os.environ['WATER_SPEED_MODE'] = '1'  # 加速模式: 30s→3s, 分钟→秒
 
 # ===== 补丁：拦截 serial_comm 模块，注入 Mock 模拟器 =====
 # 在 main_app 导入 serial_comm 之前完成注入，确保 MoistureAnalyzer

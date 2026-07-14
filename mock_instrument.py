@@ -50,9 +50,11 @@ class MockInstrumentSimulator:
         self._running = False
         self._thread = None
 
-        # 模拟升温速率 (℃/s)
-        self._heat_rate = 20.0
-        self._cool_rate = 2.0
+        # 模拟升温速率 (℃/s) — 加速模式: 50°C/s
+        import os as _os
+        _speed = _os.environ.get('WATER_SPEED_MODE', '0') == '1'
+        self._heat_rate = 50.0 if _speed else 20.0
+        self._cool_rate = 5.0 if _speed else 2.0
 
     # ===== 生命周期 =====
 

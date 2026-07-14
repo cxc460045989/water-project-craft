@@ -50,6 +50,7 @@ class WeighWorker(QThread):
         self._last_uplink_time = time.time()  # 最近上行帧时间戳
         self._last_btn_pressed = False          # 最近上行帧仪器按键状态
         self._reweigh_rows = None               # 重新称量模式: set of row indices
+        self._mock_sample_weight = None         # mock 样品重(g), 测试用; None=禁用
 
     def set_backfill(self, cb):
         self._backfill_cb = cb
@@ -404,18 +405,24 @@ class WeighWorker(QThread):
             weight, ok = self._read_uplink_weight()
             if ok:
                 last_weight = round(weight, 4)
-                net_weight = round(last_weight - tare_weight, 4)
-                self.sig_real_time_sample_weight.emit(net_weight)
-                self.sig_weigh_progress.emit({
-                    "phase": "individual", "row": row, "name": name,
-                    "weight": net_weight
-                })
-                # 发送样品净重到仪器（发后不管，不等响应）
-                self._send_weight_fire_and_forget(net_weight)
-                # 检测仪器按键按下 → 自动确认
-                if self._last_btn_pressed:
-                    self._confirm_event.set()
-                    break
+            elif self._mock_sample_weight is not None:
+                # mock 模式: 模拟天平读数 = 坩埚重 + 样品重
+                last_weight = round(tare_weight + self._mock_sample_weight, 4)
+            else:
+                self._sleep(0.3)
+                continue
+            net_weight = round(last_weight - tare_weight, 4)
+            self.sig_real_time_sample_weight.emit(net_weight)
+            self.sig_weigh_progress.emit({
+                "phase": "individual", "row": row, "name": name,
+                "weight": net_weight
+            })
+            # 发送样品净重到仪器（发后不管，不等响应）
+            self._send_weight_fire_and_forget(net_weight)
+            # 检测仪器按键按下 → 自动确认
+            if self._last_btn_pressed:
+                self._confirm_event.set()
+                break
             self._sleep(0.3)
         return last_weight
 
@@ -763,6 +770,12 @@ class WeighController(QObject):
         """设置重新称量模式: 只称这些行的样品，合格行跳过"""
         self._reweigh_rows = set(rows) if rows else None
 
+    def set_mock_sample_weight(self, val):
+        """设置 mock 样品重(g), 测试用; None=禁用"""
+        self._mock_sample_weight = val
+        if self._worker:
+            self._worker._mock_sample_weight = val
+
     def start_tare_weigh(self, valid_rows):
         self._valid_rows = self._filter_valid(valid_rows)
         self._weigh_phase = "tare"
@@ -799,6 +812,13 @@ class WeighController(QObject):
     def start_reweigh_sample(self):
         self._weigh_phase = "reweigh_sample"
         _log("start_reweigh_sample")
+        self._start_worker("reweigh_sample")
+
+    def start_reweigh_direct(self, valid_rows):
+        """重新称量-直接模式: 跳过准备阶段，直接从关盖开始称量不合格样品"""
+        self._valid_rows = self._filter_valid(valid_rows)
+        self._weigh_phase = "reweigh_sample"
+        _log("start_reweigh_direct: valid_rows=" + str(self._valid_rows))
         self._start_worker("reweigh_sample")
 
     def confirm_current_weigh(self):
@@ -838,6 +858,8 @@ class WeighController(QObject):
         self._worker.sig_real_time_sample_weight.connect(self.sig_real_time_sample_weight)
         if self._reweigh_rows is not None:
             self._worker._reweigh_rows = self._reweigh_rows
+        if getattr(self, '_mock_sample_weight', None) is not None:
+            self._worker._mock_sample_weight = self._mock_sample_weight
         if phase == "tare":
             self._worker.run_tare(self._valid_rows)
         elif phase == "sample":

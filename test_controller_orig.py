@@ -12,22 +12,12 @@ from PySide2.QtCore import QObject, Signal, QTimer
 from protocol_layer import CommandBuilder, CMD, UplinkBuffer
 from logging_util import logger
 
-# ===== 加速模式(Mock调试用) =====
-import os as _os
-SPEED_MODE = _os.environ.get('WATER_SPEED_MODE', '0') == '1'
-
-
-def _ts(val_normal, val_fast):
-    """时间缩放: WATER_SPEED_MODE=1 时使用快速值"""
-    return val_fast if SPEED_MODE else val_normal
-
-
-CMD_INTERVAL_S = _ts(0.15, 0.05)
-STABLE_WEIGHT_SAMPLES = _ts(15, 3)
-STABLE_TOLERANCE = _ts(0.0005, 0.01)
-UPLINK_TIMEOUT_S = _ts(3.0, 1.0)
-CMD_REPEAT_INTERVAL_S = _ts(30, 3)
-BEEPER_DURATION_S = _ts(10, 2)
+CMD_INTERVAL_S = 0.15
+STABLE_WEIGHT_SAMPLES = 15
+STABLE_TOLERANCE = 0.0005
+UPLINK_TIMEOUT_S = 3.0
+CMD_REPEAT_INTERVAL_S = 30
+BEEPER_DURATION_S = 10
 
 
 def _log(msg):
@@ -57,13 +47,6 @@ class TestConfig:
         self.tw_interval = 5
         self.tw_corr_crucible = 0.0
         self.tw_corr_dry = 0.0
-        # 新增: 测试启用/氮气/最大次数
-        self.aw_n2 = False
-        self.aw_enabled = True
-        self.aw_max_cycles = 3
-        self.tw_n2 = False
-        self.tw_enabled = True
-        self.tw_max_cycles = 3
         self.tw_tare_weight = 0.0
         self.samples = []  # [(row_idx, name, mode, sample_weight), ...]
         self.beep_enabled = True
@@ -76,9 +59,6 @@ class TestConfig:
         cfg.aw_time = int(db_params.get("aw_time", 60))
         cfg.aw_precision = float(db_params.get("aw_prec", 0.0010))
         cfg.aw_fan = bool(db_params.get("aw_fan", 0))
-        cfg.aw_n2 = bool(db_params.get("aw_n2", 0))
-        cfg.aw_enabled = bool(db_params.get("aw_enabled", 1))
-        cfg.aw_max_cycles = int(db_params.get("aw_max_cycles", 3))
         cfg.aw_const_check = bool(db_params.get("aw_const_check", 1))
         cfg.aw_interval = int(db_params.get("aw_interval", 5))
         cfg.aw_corr_crucible = float(db_params.get("aw_corr", 0.0))
@@ -87,9 +67,6 @@ class TestConfig:
         cfg.tw_time = int(db_params.get("tw_time", 60))
         cfg.tw_precision = float(db_params.get("tw_prec", 0.0030))
         cfg.tw_fan = bool(db_params.get("tw_fan", 1))
-        cfg.tw_n2 = bool(db_params.get("tw_n2", 0))
-        cfg.tw_enabled = bool(db_params.get("tw_enabled", 1))
-        cfg.tw_max_cycles = int(db_params.get("tw_max_cycles", 3))
         cfg.tw_const_check = bool(db_params.get("tw_const_check", 1))
         cfg.tw_interval = int(db_params.get("tw_interval", 5))
         cfg.tw_corr_crucible = float(db_params.get("tw_corr", 0.0))
@@ -112,34 +89,6 @@ class TestPhaseState:
         self.cycle_count = 0
 
 
-# ============================================================
-# 状态机阶段常量
-# ============================================================
-class _Phase:
-    """状态机阶段常量"""
-    INIT = "init"
-    INITIAL_WEIGH = "initial_weigh"
-    BRANCH_AW = "branch_aw"
-    DRY_AW = "dry_aw"
-    WRAP_AW = "wrap_aw"
-    BRANCH_TW = "branch_tw"
-    DRY_TW = "dry_tw"
-    CALC_SAVE = "calc_save"
-    DONE = "done"
-
-
-class _DrySubState:
-    """烘干恒重子流程状态"""
-    START = 0
-    TEMP_PATROL = 1
-    HOLD = 2
-    WEIGH = 3
-    CONST_CHECK = 4
-
-
-TEMP_PATROL_INTERVAL_S = _ts(30, 3)
-FAN_STOP_ADVANCE_S = _ts(30, 3)
-
 class TestWorker(QObject):
     """测试执行器 - QTimer驱动状态机"""
 
@@ -158,9 +107,6 @@ class TestWorker(QObject):
     sig_test_done = Signal()
     sig_beeper_start = Signal()
     sig_beeper_stop = Signal()
-    # 新增: 初始称重信号
-    sig_initial_weight = Signal(int, float)
-    sig_initial_weigh_done = Signal()
 
     def __init__(self, serial_mgr, config, parent=None):
         super().__init__(parent)
@@ -174,19 +120,6 @@ class TestWorker(QObject):
         self._last_uplink_time = time.time()
         self._current_temp = 0.0
         self._current_weight = 0.0
-        # 状态机
-        self._phase = ""
-        self._dry_sub_state = _DrySubState.START
-        self._dry_cycle = 0
-        self._samples = []
-        self._temp_target = 0
-        self._initial_weights = {}
-
-        # 温度巡检
-        self._last_patrol_time = 0.0
-        self._patrol_timer = QTimer(self)
-        self._patrol_timer.timeout.connect(self._on_patrol_tick)
-
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._on_tick)
         self._tick_interval_ms = 200
@@ -196,13 +129,13 @@ class TestWorker(QObject):
     # ========= 公共接口 =========
 
     def start_test(self):
-        """启动测试 - 进入状态机"""
+        """启动测试 - 从分析水阶段开始"""
         _log("测试开始")
         self._running = True
         self._paused = False
         self._phase = ""
-        self._initial_weights = {}
-        self._transition(_Phase.INIT)
+        self._start_phase("analysis_water", self.cfg)
+        self._timer.start(self._tick_interval_ms)
 
     def stop_test(self):
         """停止测试 - 关闭加热/气体/蜂鸣"""
@@ -211,10 +144,7 @@ class TestWorker(QObject):
         self._paused = False
         self._timer.stop()
         self._hold_timer.stop()
-        self._patrol_timer.stop()
         self._safe_send_cmd(CMD.HEAT_OFF, "关闭加热")
-        self._safe_send_cmd(CMD.FAN_OFF, "关鼓风")
-        self._safe_send_cmd(CMD.N2_OFF, "关氮气")
         self._safe_send_cmd(CMD.GAS_ALL_OFF, "关闭全部气体")
         self._safe_send_cmd(CMD.BEEPER_OFF, "关蜂鸣")
 
@@ -230,336 +160,57 @@ class TestWorker(QObject):
     def is_running(self):
         return self._running
 
-    # ================================================================
-    # 状态机转换
-    # ================================================================
+    # ========= 阶段管理 =========
 
-    def _transition(self, phase):
-        """状态转换入口"""
-        if not self._running:
-            return
-        self._phase = phase
-        self.sig_phase_changed.emit(phase)
-        _log("状态切换: " + phase)
-
-        dispatch = {
-            _Phase.INIT: self._step_init,
-            _Phase.INITIAL_WEIGH: self._step_initial_weigh,
-            _Phase.BRANCH_AW: self._step_branch_aw,
-            _Phase.DRY_AW: self._step_dry_start,
-            _Phase.WRAP_AW: self._step_wrap_aw,
-            _Phase.BRANCH_TW: self._step_branch_tw,
-            _Phase.DRY_TW: self._step_dry_start,
-            _Phase.CALC_SAVE: self._step_calc_save,
-            _Phase.DONE: self._step_done,
-        }
-        fn = dispatch.get(phase)
-        if fn:
-            QTimer.singleShot(_ts(50, 10), fn)
-        else:
-            _log("未知阶段: " + phase)
-
-    # ================================================================
-    # 步骤1: 测试初始化
-    # ================================================================
-
-    def _step_init(self):
-        """测试初始化: 关闭加热/鼓风/气阀"""
-        self.sig_step_progress.emit("测试初始化...")
-        self.sig_status_msg.emit("正在初始化...")
-        _log("步骤1: 复位硬件状态")
-        self._safe_send_cmd(CMD.HEAT_OFF, "关闭加热")
-        self._safe_send_cmd(CMD.FAN_OFF, "关鼓风")
-        self._safe_send_cmd(CMD.N2_OFF, "关氮气")
-        self._safe_send_cmd(CMD.GAS_ALL_OFF, "关闭全部气体")
-        self._timer.start(self._tick_interval_ms)
-        self._transition(_Phase.INITIAL_WEIGH)
-
-    # ================================================================
-    # 步骤2: 初始称重(仅1次)
-    # ================================================================
-
-    def _step_initial_weigh(self):
-        """初始称重: 读取称量瓶+待测样品总重"""
-        self.sig_step_progress.emit("初始称重...")
-        self.sig_status_msg.emit("正在初始称重...")
-        _log("步骤2: 初始称重, 样品数=%d" % len(self.cfg.samples))
-
-        if not self.cfg.samples:
-            _log("初始称重: 无样品, 跳过")
-            self._transition(_Phase.BRANCH_AW)
-            return
-
-        self._do_initial_weigh_seq(0)
-
-    def _do_initial_weigh_seq(self, idx):
-        """逐个称重样品初始重量"""
-        if not self._running:
-            return
-        if idx >= len(self.cfg.samples):
-            _log("初始称重完成, 共 %d 个" % len(self._initial_weights))
-            self.sig_initial_weigh_done.emit()
-            self._transition(_Phase.BRANCH_AW)
-            return
-
-        row_idx, name, mode, sample_weight = self.cfg.samples[idx]
-        stable_weight = self._wait_stable_weight(timeout=_ts(10.0, 2.0))
-        if stable_weight is not None:
-            self._initial_weights[row_idx] = stable_weight
-            self.sig_initial_weight.emit(row_idx, stable_weight)
-            _log("初始称重 row=%d name=%s weight=%.4f" % (row_idx, name, stable_weight))
-        else:
-            _log("初始称重失败 row=%d name=%s" % (row_idx, name))
-
-        QTimer.singleShot(_ts(100, 20), lambda i=idx: self._do_initial_weigh_seq(i + 1))
-
-    # ================================================================
-    # 步骤3: 分析水分支判断
-    # ================================================================
-
-    def _step_branch_aw(self):
-        """判断是否启用分析水测试"""
-        _log("步骤3: 分析水分支判断, enabled=%s" % self.cfg.aw_enabled)
-        if not self.cfg.aw_enabled:
-            _log("分析水未启用, 跳转全水分支")
-            self._transition(_Phase.BRANCH_TW)
-            return
-
-        self._samples = [
-            s for s in self.cfg.samples
-            if s[1].strip() and (s[2] == "分析水" or not s[2]) and s[3] is not None
+    def _start_phase(self, phase_name, cfg):
+        """启动测试阶段, 过滤对应模式的样品"""
+        self._phase = phase_name
+        self._state = TestPhaseState(cfg)
+        # 过滤对应模式样品
+        mode_filter = "分析水" if phase_name == "analysis_water" else "全水"
+        self._state.samples = [
+            s for s in cfg.samples
+            if s[1].strip() and (s[2] == mode_filter or not s[2]) and s[3] is not None
         ]
-        _log("分析水样品数: %d" % len(self._samples))
+        _log("启动阶段 %s, 有效样品 %d 个" % (phase_name, len(self._state.samples)))
+        self.sig_phase_changed.emit(phase_name)
+        label = "分析水" if phase_name == "analysis_water" else "全水"
+        self.sig_status_msg.emit("阶段: " + label)
 
-        if not self._samples:
-            _log("分析水无有效样品, 跳过")
-            self._transition(_Phase.WRAP_AW)
+        if not self._state.samples:
+            _log("阶段 %s 无有效样品, 跳过" % phase_name)
+            self._on_phase_done()
             return
 
-        self._dry_cycle = 0
-        self._temp_target = self.cfg.aw_temp
-        r = self.cfg.aw_time
-        self._hold_target = r if SPEED_MODE else r * 60
-        self.sig_status_msg.emit("开始分析水测试")
-        self._transition(_Phase.DRY_AW)
+        self._state.stage_done = False
+        self._state.cycle_count = 0
+        self._step_start_moisture_test()
 
-    # ================================================================
-    # 步骤6: 全水分支判断
-    # ================================================================
-
-    def _step_branch_tw(self):
-        """判断是否启用全水分测试"""
-        _log("步骤6: 全水分支判断, enabled=%s" % self.cfg.tw_enabled)
-        if not self.cfg.tw_enabled:
-            _log("全水未启用, 跳转结果计算")
-            self._transition(_Phase.CALC_SAVE)
-            return
-
-        self._samples = [
-            s for s in self.cfg.samples
-            if s[1].strip() and s[2] == "全水" and s[3] is not None
-        ]
-        _log("全水样品数: %d" % len(self._samples))
-
-        if not self._samples:
-            _log("全水无有效样品, 跳过")
-            self._transition(_Phase.CALC_SAVE)
-            return
-
-        self._dry_cycle = 0
-        self._temp_target = self.cfg.tw_temp
-        r = self.cfg.tw_time
-        self._hold_target = r if SPEED_MODE else r * 60
-        self.sig_status_msg.emit("开始全水分测试")
-        self._transition(_Phase.DRY_TW)
-
-    # ================================================================
-    # 步骤4: 烘干恒重通用子流程(分析水/全水复用)
-    # ================================================================
-
-    @property
-    def _is_aw(self):
-        return self._phase == _Phase.DRY_AW
-
-    @property
-    def _dry_cfg_fan(self):
-        return self.cfg.aw_fan if self._is_aw else self.cfg.tw_fan
-
-    @property
-    def _dry_cfg_n2(self):
-        return self.cfg.aw_n2 if self._is_aw else self.cfg.tw_n2
-
-    @property
-    def _dry_cfg_temp(self):
-        return self.cfg.aw_temp if self._is_aw else self.cfg.tw_temp
-
-    @property
-    def _dry_cfg_time(self):
-        return self.cfg.aw_time if self._is_aw else self.cfg.tw_time
-
-    @property
-    def _dry_cfg_precision(self):
-        return self.cfg.aw_precision if self._is_aw else self.cfg.tw_precision
-
-    @property
-    def _dry_cfg_max_cycles(self):
-        return self.cfg.aw_max_cycles if self._is_aw else self.cfg.tw_max_cycles
-
-    @property
-    def _dry_cfg_const_check(self):
-        return self.cfg.aw_const_check if self._is_aw else self.cfg.tw_const_check
-
-    def _step_dry_start(self):
-        """烘干启动: 开鼓风/氮气 -> 发控温指令"""
-        mode = "分析水" if self._is_aw else "全水"
-        self._dry_sub_state = _DrySubState.START
-        self._holding = False
-        self._hold_elapsed = 0.0
-        self._hold_timer.stop()
-        self._patrol_timer.stop()
-
-        fan = self._dry_cfg_fan
-        n2 = self._dry_cfg_n2
-        temp = self._dry_cfg_temp
-
-        _log("烘干启动: mode=%s cycle=%d fan=%s n2=%s temp=%dC" %
-             (mode, self._dry_cycle + 1, fan, n2, temp))
-
-        if fan:
-            self._safe_send_cmd(CMD.FAN_ON, "开鼓风")
-        if n2:
-            self._safe_send_cmd(CMD.N2_ON, "开氮气")
-
-        self.sig_status_msg.emit("%s 第%d轮烘干, 目标%dC" %
-                                  (mode, self._dry_cycle + 1, temp))
-
-        cmd = CommandBuilder.build_temp_control(temp)
-        self._send_cmd_with_uplink_check(cmd, "控温 %dC" % temp,
-                                          callback=self._start_temp_patrol)
-
-    def _start_temp_patrol(self):
-        """开始温度巡检: 30s间隔, 每30s重发控温指令"""
-        if not self._running:
-            return
-        self._dry_sub_state = _DrySubState.TEMP_PATROL
-        self._last_patrol_time = time.time()
-        self.sig_status_msg.emit("温度巡检中... 目标%dC" % self._temp_target)
-        _log("温度巡检开始, 目标=%dC, 间隔=%ds" % (self._temp_target, TEMP_PATROL_INTERVAL_S))
-        self._patrol_timer.start(TEMP_PATROL_INTERVAL_S * 1000)
-
-    def _on_patrol_tick(self):
-        """温度巡检定时器(每30s): 重发控温+检查温度"""
-        if not self._running or self._paused:
-            return
-        if self._dry_sub_state != _DrySubState.TEMP_PATROL:
-            return
-
-        cmd = CommandBuilder.build_temp_control(self._temp_target)
-        self._send_cmd_with_uplink_check(cmd,
-                                          "温度巡检: 控温 %dC" % self._temp_target,
-                                          callback=None)
-        _log("温度巡检: 当前=%.1fC 目标=%dC" % (self._current_temp, self._temp_target))
-
-        if self._current_temp >= (self._temp_target - 5):
-            _log("温度达标 %.1fC >= %dC, 转入恒温保持" %
-                 (self._current_temp, self._temp_target - 5))
-            self._patrol_timer.stop()
-            self._start_hold()
-
-    def _start_hold(self):
-        """开始恒温保持倒计时"""
-        if not self._running:
-            return
-        self._dry_sub_state = _DrySubState.HOLD
-        self._holding = True
-        self._hold_elapsed = 0.0
-
-        hold_secs = int(self._hold_target)
-        if SPEED_MODE:
-            self.sig_hold_started.emit(hold_secs)
-            self.sig_status_msg.emit("恒温保持 %ds" % hold_secs)
-            _log("恒温开始: %d 秒" % hold_secs)
+    def _on_phase_done(self):
+        """阶段完成后调度: 分析水->全水->结束"""
+        if self._phase == "analysis_water":
+            _log("分析水阶段完成, 开始全水测试")
+            self.sig_phase_done.emit("analysis_water")
+            self._start_phase("total_water", self.cfg)
         else:
-            hold_min = int(self._hold_target / 60)
-            self.sig_hold_started.emit(hold_min)
-            self.sig_status_msg.emit("恒温保持 %d:00" % hold_min)
-            _log("恒温开始: %d 分钟" % hold_min)
-        self._hold_timer.start(1000)
+            _log("跳过恒重检查, 阶段完成")
+            self.sig_phase_done.emit("total_water")
+            self._on_test_complete()
 
-    def _start_hold_end_weigh(self):
-        """恒温结束, 进入称重阶段"""
-        if not self._running:
-            return
-        self._dry_sub_state = _DrySubState.WEIGH
-        self._safe_send_cmd(CMD.FAN_OFF, "关鼓风")
-        self._safe_send_cmd(CMD.N2_OFF, "关氮气")
-        self.sig_step_progress.emit("恒温结束, 开始称量")
-        self.sig_status_msg.emit("称量中...")
-        _log("恒温结束, 开始称量 %d 个样品" % len(self._samples))
-        self._do_weighing()
-
-    def _on_dry_done(self):
-        """烘干恒重子流程完成"""
-        mode = "分析水" if self._is_aw else "全水"
-        _log("%s 烘干恒重完成" % mode)
-        self._safe_send_cmd(CMD.HEAT_OFF, "关闭加热")
-
-        if self._is_aw:
-            self._transition(_Phase.WRAP_AW)
-        else:
-            self._transition(_Phase.CALC_SAVE)
-
-    # ================================================================
-    # 步骤5: 分析水收尾
-    # ================================================================
-
-    def _step_wrap_aw(self):
-        """分析水测试收尾"""
-        _log("步骤5: 分析水测试收尾")
-        self.sig_status_msg.emit("分析水测试完成")
-        self.sig_phase_done.emit("analysis_water")
-        self._transition(_Phase.BRANCH_TW)
-
-    # ================================================================
-    # 步骤8: 结果计算与存储
-    # ================================================================
-
-    def _step_calc_save(self):
-        """结果计算与数据存储"""
-        _log("步骤8: 结果计算与数据存储")
-        self.sig_status_msg.emit("测试完成, 计算水分...")
-        self.sig_phase_done.emit("total_water")
-        self._finalize_experiment()
-        self._transition(_Phase.DONE)
-
-    # ================================================================
-    # 步骤9: 测试结束
-    # ================================================================
-
-    def _step_done(self):
-        """测试结束: 关闭所有输出"""
-        _log("步骤9: 测试结束")
+    def _on_test_complete(self):
+        """测试完成 - 计算水分→存结果→开炉门→蜂鸣"""
         self._timer.stop()
         self._hold_timer.stop()
-        self._patrol_timer.stop()
         self._running = False
-
-        self._safe_send_cmd(CMD.HEAT_OFF, "关闭加热")
-        self._safe_send_cmd(CMD.FAN_OFF, "关鼓风")
-        self._safe_send_cmd(CMD.N2_OFF, "关氮气")
-        self._safe_send_cmd(CMD.GAS_ALL_OFF, "关闭全部气体")
-
-        self.sig_status_msg.emit("测试完成")
+        self.sig_status_msg.emit("测试完成, 计算水分...")
         self.sig_test_done.emit()
-
+        # 计算水分 + 存入 experiment_results + 开炉门
+        self._finalize_experiment()
+        # 完成蜂鸣
         if self.cfg.beep_enabled:
             self._safe_send_cmd(CMD.BEEPER_ON, "开蜂鸣")
             self.sig_beeper_start.emit()
             QTimer.singleShot(BEEPER_DURATION_S * 1000, self._auto_stop_beeper)
-
-    # ================================================================
-    # 主循环(200ms) + 恒温保持tick(修改版)
-    # ================================================================
 
     def _auto_stop_beeper(self):
         """自动关闭蜂鸣器"""
@@ -723,44 +374,79 @@ class TestWorker(QObject):
             traceback.print_exc()
             self.sig_error.emit("结果保存失败: " + str(e))
 
+    # ========= 步骤2: 发送水分测试指令 =========
 
+    def _step_start_moisture_test(self):
+        """发送水分测试指令(开鼓风/关鼓风)"""
+        fan_on = self._state.cfg.aw_fan if self._phase == "analysis_water" else self._state.cfg.tw_fan
+        func = CMD.MOISTURE_TEST_1 if fan_on else CMD.MOISTURE_TEST_2
+        label = "开鼓风" if fan_on else "关鼓风"
+        desc = "发送水分测试指令(" + label + ")"
+        self.sig_step_progress.emit(desc)
+        _log(desc)
+        self._send_cmd_code_with_uplink_check(func, desc, callback=self._step_send_temp_control)
+
+    # ========= 步骤3: 发送控温指令 =========
+
+    def _step_send_temp_control(self):
+        """发送控温指令(变长 5A 57 x1-x4 44)"""
+        temp_c = self._state.cfg.aw_temp if self._phase == "analysis_water" else self._state.cfg.tw_temp
+        cmd = CommandBuilder.build_temp_control(temp_c)
+        desc = "发送控温 %dC" % temp_c
+        self.sig_step_progress.emit(desc)
+        _log(desc)
+        self._send_cmd_with_uplink_check(cmd, desc, callback=self._step_wait_heating)
+
+    # ========= 步骤4: 等待升温进入恒温保持 =========
+
+    def _step_wait_heating(self):
+        """等待升温(由_on_tick检测)"""
+        if not self._running:
+            return
+        temp = self._state.cfg.aw_temp if self._phase == "analysis_water" else self._state.cfg.tw_temp
+        hold_minutes = self._state.cfg.aw_time if self._phase == "analysis_water" else self._state.cfg.tw_time
+        self._state.hold_target = hold_minutes * 60
+        self._state.holding = False
+        self._state.hold_elapsed = 0.0
+        self._state.last_cmd_time = time.time()
+        self.sig_status_msg.emit("等待升温 >=" + str(temp - 5) + "C...")
+        _log("等待加热 温度>=" + str(temp - 5) + "C 保持" + str(hold_minutes) + "分钟")
 
     def _on_hold_tick(self):
         """恒温保持每秒tick"""
         if not self._running or self._paused:
             return
-        if self._dry_sub_state != _DrySubState.HOLD:
-            return
-
-        self._hold_elapsed += 1
-        remaining = int(self._hold_target - self._hold_elapsed)
+        self._state.hold_elapsed += 1
+        remaining = int(self._state.hold_target - self._state.hold_elapsed)
         if remaining <= 0:
             self._hold_timer.stop()
             self.sig_hold_countdown.emit(0)
             _log("恒温结束")
-            self._start_hold_end_weigh()
-            return
+            self._step_hold_end()
+        else:
+            self.sig_hold_countdown.emit(remaining)
+            # 恒温>1分钟: 每30秒重发水分测试指令
+            if remaining > 60:
+                now = time.time()
+                if now - self._state.last_cmd_time >= CMD_REPEAT_INTERVAL_S:
+                    self._state.last_cmd_time = now
+                    fan_on = self._state.cfg.aw_fan if self._phase == "analysis_water" else self._state.cfg.tw_fan
+                    func = CMD.MOISTURE_TEST_1 if fan_on else CMD.MOISTURE_TEST_2
+                    self._send_cmd_code_with_uplink_check(func, "重发水分测试", callback=None)
+            # 剩余30秒: 提前关闭氮气鼓风
+            if remaining == 30:
+                _log("恒温剩余30秒, 关闭气体")
+                self._send_cmd_code_with_uplink_check(CMD.N2_OFF, "关氮气", callback=None)
+                self._send_cmd_code_with_uplink_check(CMD.FAN_OFF, "关鼓风", callback=None)
 
-        self.sig_hold_countdown.emit(remaining)
+    # ========= 步骤5: 恒温结束-称量 =========
 
-        # 恒温>1分钟: 每30s重发控温指令
-        if remaining > 60:
-            now = time.time()
-            if now - self._last_patrol_time >= TEMP_PATROL_INTERVAL_S:
-                self._last_patrol_time = now
-                cmd = CommandBuilder.build_temp_control(self._temp_target)
-                self._send_cmd_with_uplink_check(cmd,
-                                                  "恒温: 控温 %dC" % self._temp_target,
-                                                  callback=None)
-
-        # 剩余30秒: 提前关闭鼓风和氮气
-        if remaining == FAN_STOP_ADVANCE_S:
-            _log("恒温剩余30s, 关闭鼓风/氮气")
-            self._safe_send_cmd(CMD.FAN_OFF, "关鼓风")
-            self._safe_send_cmd(CMD.N2_OFF, "关氮气")
-            self.sig_status_msg.emit("剩余30s, 已关闭鼓风/氮气")
-
-
+    def _step_hold_end(self):
+        """恒温结束进入称量阶段"""
+        self.sig_step_progress.emit("恒温结束, 开始称量")
+        self.sig_status_msg.emit("称量中...")
+        _log("恒温结束, 开始称量 %d 个样品" % len(self._state.samples))
+        self._do_weighing()
 
     # ========= 主循环(200ms) =========
 
@@ -781,34 +467,38 @@ class TestWorker(QObject):
                 self._current_weight = f["weight"]
                 self.sig_temp_update.emit(f["temperature"])
 
-        # TEMP_PATROL状态下200ms tick也检查温度(快速响应)
-        if self._dry_sub_state == _DrySubState.TEMP_PATROL:
-            if self._current_temp >= (self._temp_target - 5):
-                _log("温度达标 %.1fC(200ms tick检测)" % self._current_temp)
-                self._patrol_timer.stop()
-                self._start_hold()
+        # 升温检测: 温度达标后转恒温保持
+        if self._state and not self._state.holding and not self._state.stage_done:
+            temp = self._state.cfg.aw_temp if self._phase == "analysis_water" else self._state.cfg.tw_temp
+            if self._current_temp >= (temp - 5):
+                self._state.holding = True
+                self._state.hold_elapsed = 0
+                self._state.last_cmd_time = time.time()
+                hold_min = int(self._state.hold_target / 60)
+                self.sig_hold_started.emit(hold_min)
+                self.sig_status_msg.emit("恒温保持 %d:00" % hold_min)
+                _log("温度 %.1fC 达标, 开始恒温 %d 分钟" % (self._current_temp, hold_min))
+                self._hold_timer.start(1000)
 
     # ========= 称量流程 =========
 
     def _do_weighing(self):
         """批量称量: 读取稳定重量->计算干燥重->存储"""
-        mode = "分析水" if self._is_aw else "全水"
-        corr_w = self.cfg.aw_corr_crucible if self._is_aw else self.cfg.tw_corr_crucible
+        corr_w = self._state.cfg.aw_corr_crucible if self._phase == "analysis_water" else self._state.cfg.tw_corr_crucible
         if corr_w > 0:
             cmd = CommandBuilder.build_send_weight(corr_w)
             self._send_cmd_with_uplink_check(cmd, "发送坩埚校正值 %.4fg" % corr_w)
             time.sleep(0.2)
 
-        tare = self.cfg.aw_tare_weight if self._is_aw else self.cfg.tw_tare_weight
-        corr_dry = self.cfg.aw_corr_dry if self._is_aw else self.cfg.tw_corr_dry
+        tare = self._state.cfg.aw_tare_weight if self._phase == "analysis_water" else self._state.cfg.tw_tare_weight
+        corr_dry = self._state.cfg.aw_corr_dry if self._phase == "analysis_water" else self._state.cfg.tw_corr_dry
         tare_offset = corr_w - corr_dry
 
-        self._dry_cycle += 1
         results = []
-        for row_idx, name, mode_str, sample_weight in self._samples:
+        for row_idx, name, mode, sample_weight in self._state.samples:
             if not self._running:
                 return
-            stable_weight = self._wait_stable_weight(timeout=_ts(15.0, 3.0))
+            stable_weight = self._wait_stable_weight(timeout=15.0)
             if stable_weight is None:
                 self.sig_error.emit("称量失败 row=%d %s" % (row_idx, name))
                 continue
@@ -818,28 +508,27 @@ class TestWorker(QObject):
             _log("称量 row=%d name=%s 读数=%.4f 坩埚重=%.4f 干燥重=%.4f" %
                  (row_idx, name, stable_weight, tare, dry_weight))
             self.sig_weigh_result.emit(row_idx, dry_weight, self._phase)
-            self._save_weigh_result(row_idx, name, mode_str, stable_weight, mid_val, dry_weight, tare, tare_offset)
+            self._save_weigh_result(row_idx, name, mode, stable_weight, mid_val, dry_weight, tare, tare_offset)
             results.append((row_idx, dry_weight))
 
         self.sig_status_msg.emit("称量完成, %d 个样品" % len(results))
-        self.sig_weigh_batch_done.emit(mode)
+        self.sig_weigh_batch_done.emit(self._phase)
         _log("称量完成 %d 个" % len(results))
         self._step_const_check(results)
 
     # ========= 步骤6: 恒重检查 =========
 
     def _step_const_check(self, weigh_results):
-        """恒重检查: diff<=阈值 或 次数达上限"""
-        if not self._dry_cfg_const_check:
-            _log("跳过恒重检查")
-            self._dry_sub_state = _DrySubState.CONST_CHECK
-            self._on_dry_done()
+        """恒重检查 + 不合格重做"""
+        const_check = self._state.cfg.aw_const_check if self._phase == "analysis_water" else self._state.cfg.tw_const_check
+        if not const_check:
+            _log("跳过恒重检查, 阶段完成")
+            self._state.stage_done = True
+            self._on_phase_done()
             return
 
-        precision = self._dry_cfg_precision
-        max_cycles = self._dry_cfg_max_cycles
+        precision = self._state.cfg.aw_precision if self._phase == "analysis_water" else self._state.cfg.tw_precision
         all_passed = True
-
         for row_idx, dry_weight in weigh_results:
             check_dry = self._load_check_dry_weight(row_idx)
             if check_dry is None:
@@ -847,31 +536,28 @@ class TestWorker(QObject):
                 _log("首次恒重检查, 保存基准值 row=%d weight=%.4f" % (row_idx, dry_weight))
                 all_passed = False
                 continue
+            # 判定: abs(上次干燥重 - 本次干燥重) <= 精度
             diff = abs(check_dry - dry_weight)
             passed = diff <= precision
             self.sig_const_check_result.emit(row_idx, passed, dry_weight, check_dry)
             _log("恒重检查 row=%d 上次=%.4f 本次=%.4f diff=%.4f prec=%.4f %s" %
-                 (row_idx, check_dry, dry_weight, diff, precision,
-                  "通过" if passed else "不通过"))
+                 (row_idx, check_dry, dry_weight, diff, precision, "通过" if passed else "不通过"))
             if not passed:
                 all_passed = False
                 self._save_check_dry_weight(row_idx, dry_weight)
-
-        # 次数上限兜底
-        if self._dry_cycle >= max_cycles:
-            _log("达到最大烘干次数 %d, 强制通过" % max_cycles)
-            all_passed = True
+                _log("未通过, 更新检查值 row=%d weight=%.4f" % (row_idx, dry_weight))
 
         if all_passed:
             _log("全部样品恒重检查通过")
-            self._dry_sub_state = _DrySubState.CONST_CHECK
-            self._on_dry_done()
+            self._state.stage_done = True
+            self._on_phase_done()
         else:
-            _log("恒重检查未通过, 重新加热(第 %d 次)" % (self._dry_cycle + 1))
-            self.sig_status_msg.emit("恒重检查未通过, 重新加热(第%d次)" %
-                                      (self._dry_cycle + 1))
-            self._dry_sub_state = _DrySubState.START
-            self._step_dry_start()
+            self._state.cycle_count += 1
+            _log("恒重检查未通过, 重新加热(第 %d 次)" % self._state.cycle_count)
+            self.sig_status_msg.emit("恒重检查未通过, 重新加热(第 %d 次)" % self._state.cycle_count)
+            self._state.holding = False
+            self._state.hold_elapsed = 0.0
+            self._step_send_temp_control()
 
     # ========= 串口工具方法 =========
 
@@ -907,9 +593,7 @@ class TestWorker(QObject):
         except Exception as e:
             _log("安全发送失败: " + str(e))
 
-    def _wait_stable_weight(self, timeout=None):
-        if timeout is None:
-            timeout = _ts(15.0, 3.0)
+    def _wait_stable_weight(self, timeout=15.0):
         """等待天平读数稳定, 返回均值
         连续N次波动<=容差判定稳定
         """
@@ -1045,11 +729,6 @@ class TestController(QObject):
     sig_test_done = Signal()
     sig_beeper_start = Signal()
     sig_beeper_stop = Signal()
-    sig_initial_weight = Signal(int, float)
-    sig_initial_weigh_done = Signal()
-    # 新增: 初始称重信号
-    sig_initial_weight = Signal(int, float)
-    sig_initial_weigh_done = Signal()
 
     def __init__(self, serial_mgr, parent=None):
         super().__init__(parent)
@@ -1072,7 +751,6 @@ class TestController(QObject):
             "sig_error", "sig_step_progress", "sig_weigh_result",
             "sig_weigh_batch_done", "sig_const_check_result",
             "sig_phase_done", "sig_test_done", "sig_beeper_start", "sig_beeper_stop",
-            "sig_initial_weight", "sig_initial_weigh_done",
         ]
         for sname in signals:
             getattr(self._worker, sname).connect(getattr(self, sname))
