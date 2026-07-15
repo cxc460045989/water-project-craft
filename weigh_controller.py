@@ -275,7 +275,7 @@ class WeighWorker(QThread):
         """单独称重模式: 逐个样位称量样品，UI按钮确认
         样位从2号开始(跳过1号校正坩埚)
         流程: 移样位→延时1s→去皮→(样盘下降→等待确认→超标判断)*重试
-        当 _skip_plate_ops=True: 跳过样盘下降/上升/退出称重（追加样品模式，由调用方统一升降）
+        当 _skip_plate_ops=True: 跳过移样位/样盘下降/上升/退出称重（追加样品模式，样盘已在目标位低位）
         """
         individual_rows = [(r, n, m) for r, n, m in self._valid_rows if r > 0]
         _log("单独称量样品开始, 有效样品 " + str(len(individual_rows)) + " 个")
@@ -290,12 +290,13 @@ class WeighWorker(QThread):
                 position = row + 1
                 _log("单独称量 row=" + str(row) + " name=" + name + " pos=" + str(position))
 
-                # 步骤1: 移动到指定位
+                # 步骤1: 移动到指定位（追加样品模式跳过，样盘已在目标位）
                 self.sig_weigh_progress.emit({"phase": "individual", "row": row, "name": name, "weight": 0.0})
-                self._send_move_to(position)
-                self._sleep(CMD_INTERVAL_S)
-                # 步骤2: 延时1s等待机械稳定
-                self._sleep(1.0)
+                if not self._skip_plate_ops:
+                    self._send_move_to(position)
+                    self._sleep(CMD_INTERVAL_S)
+                    # 步骤2: 延时1s等待机械稳定
+                    self._sleep(1.0)
                 # 步骤3: 天平清零(去皮)
                 self._send_cmd(CMD.TARE, desc="天平清零")
                 _log("天平清零已发送")
