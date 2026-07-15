@@ -359,7 +359,7 @@ def create_experiment(batch_no="", tech="", unit="", method="gb", weigh_mode=0):
             tw_temp, tw_time, tw_const_check, tw_prec, tw_interval,
             tw_low, tw_high, tw_fan, tw_corr,
             beep, retest, autoclear
-        ) VALUES (?,?,?,?,?,  ?,?,?,?,?,  ?,?,?,?,?,  ?,?,?,?,?,  ?,?,?,?,?,  ?,?,?)
+        ) VALUES (?,?,?,?,?,  ?,?,?,?,?,  ?,?,?,?,  ?,?,?,?,?,  ?,?,?,?,  ?,?,?)
     """, (
         batch_no or datetime.datetime.now().strftime("%Y%m%d_%H%M%S"),
         tech or params.get("hy_current", ""),

@@ -50,7 +50,7 @@ class WeighWorker(QThread):
         self._last_uplink_time = time.time()  # 最近上行帧时间戳
         self._last_btn_pressed = False          # 最近上行帧仪器按键状态
         self._reweigh_rows = None               # 重新称量模式: set of row indices
-        self._mock_sample_weight = None         # mock 样品重(g), 测试用; None=禁用
+        self._skip_plate_ops = False            # 追加样品模式: 跳过样盘升降（样盘已在低位）
 
     def set_backfill(self, cb):
         self._backfill_cb = cb
@@ -275,6 +275,7 @@ class WeighWorker(QThread):
         """单独称重模式: 逐个样位称量样品，UI按钮确认
         样位从2号开始(跳过1号校正坩埚)
         流程: 移样位→延时1s→去皮→(样盘下降→等待确认→超标判断)*重试
+        当 _skip_plate_ops=True: 跳过样盘下降/上升/退出称重（追加样品模式，由调用方统一升降）
         """
         individual_rows = [(r, n, m) for r, n, m in self._valid_rows if r > 0]
         _log("单独称量样品开始, 有效样品 " + str(len(individual_rows)) + " 个")
@@ -302,23 +303,28 @@ class WeighWorker(QThread):
                 tare_weight = self._get_tare_weight(row)
 
                 while self._running:
-                    # 步骤4: 样盘下降 → 进入称重就绪
-                    self._send_cmd(CMD.SAMPLE_PLATE_DOWN, desc="样盘下降")
-                    _t0 = time.time()
-                    while self._running and (time.time() - _t0) < 15.0:
-                        _, ok = self._read_uplink_weight()
-                        if ok:
-                            break
-                        self._sleep(0.1)
-                    _log("样盘下降完成, 等待确认...")
+                    # 步骤4: 样盘下降 → 进入称重就绪（追加样品模式跳过，样盘已在低位）
+                    if not self._skip_plate_ops:
+                        self._send_cmd(CMD.SAMPLE_PLATE_DOWN, desc="样盘下降")
+                        _t0 = time.time()
+                        while self._running and (time.time() - _t0) < 15.0:
+                            _, ok = self._read_uplink_weight()
+                            if ok:
+                                break
+                            self._sleep(0.1)
+                        _log("样盘下降完成, 等待确认...")
 
                     # 步骤5: 等待UI确认(持续刷新净重显示)
                     weight = self._wait_ui_confirm_with_display(row, name, tare_weight)
                     if not self._running:
                         return
 
-                    # 步骤6: 计算样品净重 = 天平读数 - 坩埚重
-                    sample_weight = round(weight - tare_weight, 4)
+                    # 步骤6: 计算样品净重
+                    # skip_plate_ops 模式: 天平已用坩埚归零，读数即样品净重
+                    if self._skip_plate_ops:
+                        sample_weight = round(weight, 4)
+                    else:
+                        sample_weight = round(weight - tare_weight, 4)
                     _log("单独称量 row=" + str(row) +
                          " 总重=" + str(weight) +
                          " 坩埚重=" + str(tare_weight) +
@@ -339,12 +345,14 @@ class WeighWorker(QThread):
                     break  # 进入下一个样位
 
             _log("单独称量全部完成")
-            self.sig_status_msg.emit("正在上升样盘...")
-            self._send_long_duration_cmd(CMD.SAMPLE_PLATE_UP, desc="样盘上升")
-            self._send_cmd(CMD.BEEPER_1S, desc="蜂鸣提示")
+            if not self._skip_plate_ops:
+                self.sig_status_msg.emit("正在上升样盘...")
+                self._send_long_duration_cmd(CMD.SAMPLE_PLATE_UP, desc="样盘上升")
+                self._send_cmd(CMD.BEEPER_1S, desc="蜂鸣提示")
             self.sig_weigh_done.emit("sample")
         finally:
-            self._send_cmd(CMD.EXIT_WEIGH_MODE, desc="解除称重状态")
+            if not self._skip_plate_ops:
+                self._send_cmd(CMD.EXIT_WEIGH_MODE, desc="解除称重状态")
 
     # ===== 重新称量（独立封装）=====
     def _reweigh_tare(self):
@@ -405,13 +413,14 @@ class WeighWorker(QThread):
             weight, ok = self._read_uplink_weight()
             if ok:
                 last_weight = round(weight, 4)
-            elif self._mock_sample_weight is not None:
-                # mock 模式: 模拟天平读数 = 坩埚重 + 样品重
-                last_weight = round(tare_weight + self._mock_sample_weight, 4)
             else:
                 self._sleep(0.3)
                 continue
-            net_weight = round(last_weight - tare_weight, 4)
+            # skip_plate_ops 模式: 天平已用坩埚归零，读数即样品净重
+            if self._skip_plate_ops:
+                net_weight = round(last_weight, 4)
+            else:
+                net_weight = round(last_weight - tare_weight, 4)
             self.sig_real_time_sample_weight.emit(net_weight)
             self.sig_weigh_progress.emit({
                 "phase": "individual", "row": row, "name": name,
@@ -770,11 +779,11 @@ class WeighController(QObject):
         """设置重新称量模式: 只称这些行的样品，合格行跳过"""
         self._reweigh_rows = set(rows) if rows else None
 
-    def set_mock_sample_weight(self, val):
-        """设置 mock 样品重(g), 测试用; None=禁用"""
-        self._mock_sample_weight = val
+    def set_skip_plate_ops(self, skip):
+        """追加样品模式: 跳过样盘升降操作（样盘已在低位）"""
+        self._skip_plate_ops = skip
         if self._worker:
-            self._worker._mock_sample_weight = val
+            self._worker._skip_plate_ops = skip
 
     def start_tare_weigh(self, valid_rows):
         self._valid_rows = self._filter_valid(valid_rows)
@@ -858,8 +867,8 @@ class WeighController(QObject):
         self._worker.sig_real_time_sample_weight.connect(self.sig_real_time_sample_weight)
         if self._reweigh_rows is not None:
             self._worker._reweigh_rows = self._reweigh_rows
-        if getattr(self, '_mock_sample_weight', None) is not None:
-            self._worker._mock_sample_weight = self._mock_sample_weight
+        if getattr(self, '_skip_plate_ops', False):
+            self._worker._skip_plate_ops = True
         if phase == "tare":
             self._worker.run_tare(self._valid_rows)
         elif phase == "sample":

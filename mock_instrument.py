@@ -169,6 +169,14 @@ class MockInstrumentSimulator:
         elif fc == CMD.TARE:
             self._tare_offset = 0.0
             self._weight = 0.0
+            # 样品称量阶段: 去皮后模拟样品净重（无需等 SAMPLE_PLATE_DOWN）
+            if self._in_sample_phase:
+                if self._position not in self._sample_weights:
+                    if self._position <= 6:
+                        self._sample_weights[self._position] = round(0.95 + self._position * 0.01, 4)
+                    else:
+                        self._sample_weights[self._position] = round(9.50 + (self._position - 6) * 0.12, 4)
+                self._weight = self._sample_weights[self._position]
         elif fc == CMD.CALIBRATE:
             pass  # 模拟校准
         elif fc == CMD.CLOSE_LID:
@@ -178,6 +186,7 @@ class MockInstrumentSimulator:
             self._in_sample_phase = True
         elif fc == CMD.ENTER_WEIGH_MODE:
             self._weigh_mode = True
+            self._in_sample_phase = True
         elif fc == CMD.EXIT_WEIGH_MODE:
             self._weigh_mode = False
         elif fc == CMD.HEAT_OFF:

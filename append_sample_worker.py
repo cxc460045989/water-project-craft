@@ -3,7 +3,7 @@
 独立 QThread 封装，仅负责阶段1（单坩埚称量），阶段2 复用现有 WeighController。
 
 流程:
-  阶段1 单坩埚称量: 关盖 → 发校正值 → 移样位 → 清零 → 样盘下降 → 读数 → 开盖(不抬样盘)
+  阶段1 单坩埚称量: 发校正值 → 移样位 → 清零 → 样盘下降 → 读数（全程开盖，不抬样盘）
   阶段2 单样品称量: 由 main_app 创建 WeighController.start_individual_sample_weigh() 负责
 
 依赖: protocol_layer.py, serial_comm.py, db.py（仅 import 调用，不修改）
@@ -17,7 +17,7 @@ from logging_util import logger
 
 # ======== 可配置常量 ========
 CMD_INTERVAL_S = 0.15
-LID_WAIT_S = 15.0           # 炉盖开关后等待时间
+
 TARE_TARGET_COL = 2          # 坩埚重列
 
 
@@ -28,8 +28,8 @@ def _log(msg):
 class AppendSampleWorker(QThread):
     """追加样品 — 阶段1 坩埚称量工作线程
 
-    仅负责: 关闭炉盖 → 发送校正值 → 移动到目标工位 → 天平清零 →
-            样盘下降 → 稳定读数 → 坩埚重回填 → 打开炉盖(不抬样盘)
+    仅负责: 发送校正值 → 移动到目标工位 → 天平清零 →
+            样盘下降 → 稳定读数 → 坩埚重回填（全程开盖，不抬样盘）
 
     信号:
       sig_status_msg(str) — 硬件动作状态
@@ -83,15 +83,11 @@ class AppendSampleWorker(QThread):
     # ================================================================
 
     def _do_tare(self):
-        """单坩埚称量: 关盖→校正值→移位→清零→下降→读数→开盖(⚠️不抬样盘)"""
+        """单坩埚称量: 校正值→移位→清零→下降→读数（全程开盖，不抬样盘）"""
         _log("坩埚称量: row=%d name=%s" % (self._row, self._name))
         position = self._row + 1
 
-        # 1. 关闭炉盖
-        self._send_cmd(CMD.CLOSE_LID, "关闭炉盖")
-        self._wait_lid("正在关闭炉盖")
-
-        # 2. 发送坩埚校正值
+        # 1. 发送坩埚校正值
         corr_w = self._get_crucible_correction_weight()
         if corr_w > 0:
             _log("发送坩埚校正值: %.4fg" % corr_w)
@@ -99,28 +95,24 @@ class AppendSampleWorker(QThread):
             send_cmd_with_uplink_check(self._serial, corr_cmd, "坩埚校正值")
             self._sleep(CMD_INTERVAL_S)
 
-        # 3. 通知 UI 进入坩埚称量显示
+        # 2. 通知 UI 进入坩埚称量显示
         self.sig_progress.emit({"phase": "tare", "row": self._row,
                                 "name": self._name, "weight": 0.0})
         self._send_move_to(position)
         self._sleep(CMD_INTERVAL_S)
         self._sleep(1.0)
 
-        # 4. 天平清零
+        # 3. 天平清零
         self._send_cmd(CMD.TARE, "天平清零")
         _log("天平清零已发送")
 
-        # 5. 样盘下降 + 等待稳定读数
+        # 4. 样盘下降 + 等待稳定读数
         weight = self._wait_descend_and_read()
         _log("坩埚重量: %.4fg" % weight)
 
-        # 6. 回填坩埚重到表格 + 数据库
+        # 5. 回填坩埚重到表格 + 数据库
         self._backfill_tare(weight)
-
-        # 7. 打开炉盖（⚠️ 样盘不抬起！）
-        self._send_cmd(CMD.OPEN_LID, "打开炉盖")
-        self._wait_lid("正在打开炉盖")
-        _log("坩埚称量完成: %.4fg 已开盖(样盘未抬)" % weight)
+        _log("坩埚称量完成: %.4fg（样盘未抬）" % weight)
 
         # 通知完成（不带消息，main_app 直接转阶段2）
         self.sig_done.emit(True, "")
@@ -142,17 +134,6 @@ class AppendSampleWorker(QThread):
         ok = send_cmd_with_uplink_check(self._serial, cmd, "移动到%d号位" % position)
         if not ok:
             self.sig_error.emit("样盘移动指令发送失败 pos=%d" % position)
-
-    def _wait_lid(self, desc):
-        """等待炉盖动作完成（倒计时）"""
-        is_mock = getattr(getattr(self._serial, '_serial', None), 'port', '') == 'MOCK'
-        wait_s = 3.0 if is_mock else LID_WAIT_S
-        for remaining in range(int(wait_s), 0, -1):
-            if not self._running:
-                return
-            self.sig_status_msg.emit("%s... %ds" % (desc, remaining))
-            self._sleep(1)
-        _log("炉盖动作完成: " + desc)
 
     # ================================================================
     # 上行帧读取

@@ -1416,12 +1416,14 @@ class MoistureAnalyzer(QMainWindow):
 
             # ============================================================
             # 阶段2: 单样品称量（复用 WeighController）
+            # 追加样品模式: 样盘在阶段1已下降，跳过降升操作，流程结束时统一抬起
             # ============================================================
             def _start_phase2():
                 valid_rows = [target_row]
                 ctrl = WeighController(self)
                 ctrl.set_table(self._table)
                 ctrl.set_serial_manager(self.serial_mgr)
+                ctrl.set_skip_plate_ops(True)
 
                 def on_progress(info):
                     if info["phase"] == "individual":
@@ -1429,6 +1431,12 @@ class MoistureAnalyzer(QMainWindow):
 
                 def on_done(phase):
                     if phase == "sample":
+                        # 统一收尾: 样盘上升 + 解除称重状态
+                        from protocol_layer import CommandBuilder, send_cmd_with_uplink_check
+                        cmd_up = CommandBuilder.build_command(CMD.SAMPLE_PLATE_UP)
+                        send_cmd_with_uplink_check(self.serial_mgr, cmd_up, "样盘上升")
+                        cmd_exit = CommandBuilder.build_command(CMD.EXIT_WEIGH_MODE)
+                        send_cmd_with_uplink_check(self.serial_mgr, cmd_exit, "解除称重状态")
                         self._on_append_finished(True, "追加样品完成")
                         dlg.accept()
 
@@ -1437,7 +1445,6 @@ class MoistureAnalyzer(QMainWindow):
                     self.progress_data.setText("样品重: %.4fg" % weight)
 
                 def on_single_done(row, weight):
-                    dlg.show_single_weigh_done(row, weight)
                     self.progress_data.setText("%d号样品重: %.4fg" % (row + 1, weight))
 
                 def on_range_warning(name, weight, lo, hi):
@@ -1455,9 +1462,6 @@ class MoistureAnalyzer(QMainWindow):
                 dlg.confirm_weigh_clicked.connect(ctrl.confirm_current_weigh)
                 dlg.rejected.connect(ctrl.stop)
 
-                # 测试 mock: 无天平时模拟合理样品重
-                mock_w = 10.0 if mode == "全水" else 1.0
-                ctrl.set_mock_sample_weight(mock_w)
                 ctrl.start_individual_sample_weigh(valid_rows)
 
             # ---- 启动阶段1 ----

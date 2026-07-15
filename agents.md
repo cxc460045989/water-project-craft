@@ -24,6 +24,11 @@
   - 界面优先保证高对比度、大字号、大点击区域，无复杂动画 / 渐变特效。
 - **串口规则**：串口操作统一封装，跨平台兼容 Windows COM 口与 Linux /dev/tty* 设备节点。
 - **打包规则**：统一使用 PyInstaller，输出对应系统的打包脚本，优先单目录模式。
+- **Mock 数据隔离（优先级最高）**：
+  - 正式程序代码（main_app.py、weigh_controller.py 等业务逻辑文件）**绝对禁止**包含任何 mock 数据、mock 分支、mock fallback 逻辑。
+  - Mock 代码必须严格隔离在独立文件（如 mock_instrument.py、main_app_mock.py、main_app_debug.py），通过独立启动入口使用。
+  - 禁止在正式代码中使用 `set_mock_*` / `_mock_*` 等注入 mock 数据的 API，测试/调试应走独立入口。
+  - 违反此规则会导致硬件读数被 mock 值覆盖，造成数据错误。
 
 ## 输出格式规范
 - 代码块使用对应语言标记（python/bash）。
