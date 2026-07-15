@@ -38,13 +38,11 @@ def _init_db(conn):
             aw_interval INTEGER DEFAULT 5,
             aw_low REAL DEFAULT 0.9000, aw_high REAL DEFAULT 1.1000,
             aw_fan INTEGER DEFAULT 0, aw_corr REAL DEFAULT 0.00,
-            aw_max_cycles INTEGER DEFAULT 3,
             tw_temp REAL DEFAULT 105, tw_time INTEGER DEFAULT 60,
             tw_const_check INTEGER DEFAULT 1, tw_prec REAL DEFAULT 0.0030,
             tw_interval INTEGER DEFAULT 5,
             tw_low REAL DEFAULT 9.0000, tw_high REAL DEFAULT 12.0000,
             tw_fan INTEGER DEFAULT 1, tw_corr REAL DEFAULT 0.00,
-            tw_max_cycles INTEGER DEFAULT 3,
             beep INTEGER DEFAULT 1, retest INTEGER DEFAULT 0,
             autoclear INTEGER DEFAULT 0, sample_count INTEGER DEFAULT 24, hy_current TEXT DEFAULT ""
         );
@@ -68,10 +66,8 @@ def _init_db(conn):
             weigh_mode INTEGER,
             aw_temp REAL, aw_time INTEGER, aw_const_check INTEGER, aw_prec REAL, aw_interval INTEGER,
             aw_low REAL, aw_high REAL, aw_fan INTEGER, aw_corr REAL,
-            aw_max_cycles INTEGER,
             tw_temp REAL, tw_time INTEGER, tw_const_check INTEGER, tw_prec REAL, tw_interval INTEGER,
             tw_low REAL, tw_high REAL, tw_fan INTEGER, tw_corr REAL,
-            tw_max_cycles INTEGER,
             beep INTEGER, retest INTEGER, autoclear INTEGER,
             status TEXT DEFAULT 'pending'
         );
@@ -153,8 +149,6 @@ def _init_db(conn):
             aw_low REAL, aw_high REAL, tw_low REAL, tw_high REAL,
             aw_corr REAL, tw_corr REAL,
             aw_fan INTEGER, tw_fan INTEGER,
-            aw_max_cycles INTEGER,
-            tw_max_cycles INTEGER,
             retest INTEGER, autoclear INTEGER
         );
     """)
@@ -170,20 +164,7 @@ def _init_db(conn):
     except sqlite3.OperationalError:
         pass
     # 新增字段兼容
-    for col, spec in [("aw_max_cycles", "INTEGER DEFAULT 3"),
-                       ("tw_max_cycles", "INTEGER DEFAULT 3")]:
-        try:
-            cur.execute("ALTER TABLE params ADD COLUMN %s %s" % (col, spec))
-        except sqlite3.OperationalError:
-            pass
-    # method_presets 缺列兼容
-    for tbl in ["method_presets"]:
-        for col, spec in [("aw_max_cycles", "INTEGER DEFAULT 3"),
-                           ("tw_max_cycles", "INTEGER DEFAULT 3")]:
-            try:
-                cur.execute("ALTER TABLE %s ADD COLUMN %s %s" % (tbl, col, spec))
-            except sqlite3.OperationalError:
-                pass
+    pass
 
 
 # ========== 工厂默认值 ==========
@@ -195,8 +176,8 @@ FACTORY_DEFAULTS = {
         "weigh_mode": 0,
         "aw_low": 0.9000, "aw_high": 1.1000, "tw_low": 9.0000, "tw_high": 12.0000,
         "aw_corr": 0.00, "tw_corr": 0.00,
-        "aw_fan": 1, "aw_max_cycles": 3,
-        "tw_fan": 1, "tw_max_cycles": 3,
+        "aw_fan": 1,
+        "tw_fan": 1,
         "retest": 0, "autoclear": 1,
     },
     "kf": {
@@ -205,8 +186,8 @@ FACTORY_DEFAULTS = {
         "weigh_mode": 0,
         "aw_low": 0.9000, "aw_high": 1.1000, "tw_low": 9.0000, "tw_high": 12.0000,
         "aw_corr": 0.00, "tw_corr": 0.00,
-        "aw_fan": 1, "aw_max_cycles": 3,
-        "tw_fan": 1, "tw_max_cycles": 3,
+        "aw_fan": 1,
+        "tw_fan": 1,
         "retest": 0, "autoclear": 1,
     },
     "custom": {
@@ -215,8 +196,8 @@ FACTORY_DEFAULTS = {
         "weigh_mode": 0,
         "aw_low": 0.9000, "aw_high": 1.1000, "tw_low": 9.0000, "tw_high": 12.0000,
         "aw_corr": 0.00, "tw_corr": 0.00,
-        "aw_fan": 1, "aw_max_cycles": 3,
-        "tw_fan": 1, "tw_max_cycles": 3,
+        "aw_fan": 1,
+        "tw_fan": 1,
         "retest": 0, "autoclear": 1,
     },
 }
@@ -374,11 +355,11 @@ def create_experiment(batch_no="", tech="", unit="", method="gb", weigh_mode=0):
         INSERT INTO experiments (
             batch_no, tech, unit, method, weigh_mode,
             aw_temp, aw_time, aw_const_check, aw_prec, aw_interval,
-            aw_low, aw_high, aw_fan, aw_corr, aw_max_cycles,
+            aw_low, aw_high, aw_fan, aw_corr,
             tw_temp, tw_time, tw_const_check, tw_prec, tw_interval,
-            tw_low, tw_high, tw_fan, tw_corr, tw_max_cycles,
+            tw_low, tw_high, tw_fan, tw_corr,
             beep, retest, autoclear
-        ) VALUES (?,?,?,?,?,  ?,?,?,?,?,  ?,?,?,?,?,?,?,  ?,?,?,?,?,  ?,?,?,?,?,?,?,  ?,?,?)
+        ) VALUES (?,?,?,?,?,  ?,?,?,?,?,  ?,?,?,?,?,  ?,?,?,?,?,  ?,?,?,?,?,  ?,?,?)
     """, (
         batch_no or datetime.datetime.now().strftime("%Y%m%d_%H%M%S"),
         tech or params.get("hy_current", ""),
@@ -386,9 +367,9 @@ def create_experiment(batch_no="", tech="", unit="", method="gb", weigh_mode=0):
         method or params.get("method", "gb"),
         weigh_mode if weigh_mode is not None else params.get("weigh_mode", 0),
         params.get("aw_temp", 105), params.get("aw_time", 60), params.get("aw_const_check", 1), params.get("aw_prec", 0.001), params.get("aw_interval", 5),
-        params.get("aw_low", 0.9), params.get("aw_high", 1.1), params.get("aw_fan", 0), params.get("aw_corr", 0), params.get("aw_max_cycles", 3),
+        params.get("aw_low", 0.9), params.get("aw_high", 1.1), params.get("aw_fan", 0), params.get("aw_corr", 0),
         params.get("tw_temp", 105), params.get("tw_time", 60), params.get("tw_const_check", 1), params.get("tw_prec", 0.003), params.get("tw_interval", 5),
-        params.get("tw_low", 9.0), params.get("tw_high", 12.0), params.get("tw_fan", 1), params.get("tw_corr", 0), params.get("tw_max_cycles", 3),
+        params.get("tw_low", 9.0), params.get("tw_high", 12.0), params.get("tw_fan", 1), params.get("tw_corr", 0),
         params.get("beep", 1), params.get("retest", 0), params.get("autoclear", 0),
     ))
     conn.commit()

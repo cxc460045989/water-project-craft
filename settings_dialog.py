@@ -201,11 +201,6 @@ class SettingsDialog(QDialog):
         h4.addWidget(self.le_aw_interval); h4.addWidget(QLabel(" 分钟 "))
         aw_layout.addRow(" 称量间隔 ", h4)
 
-        h_aw_cycles = QHBoxLayout(); h_aw_cycles.setSpacing(6)
-        self.le_aw_max_cycles = QLineEdit("3"); self.le_aw_max_cycles.setFixedWidth(80); self.le_aw_max_cycles.setAlignment(Qt.AlignCenter)
-        h_aw_cycles.addWidget(self.le_aw_max_cycles); h_aw_cycles.addWidget(QLabel(" 次 "))
-        aw_layout.addRow(" 最大烘干次数 ", h_aw_cycles)
-
         mid_layout.addWidget(grp_aw)
 
         # -- 右侧：全水控温控时 --
@@ -238,11 +233,6 @@ class SettingsDialog(QDialog):
         self.le_tw_interval = QLineEdit("5"); self.le_tw_interval.setFixedWidth(80); self.le_tw_interval.setAlignment(Qt.AlignCenter)
         h8.addWidget(self.le_tw_interval); h8.addWidget(QLabel(" 分钟 "))
         tw_layout.addRow(" 称量间隔 ", h8)
-
-        h_tw_cycles = QHBoxLayout(); h_tw_cycles.setSpacing(6)
-        self.le_tw_max_cycles = QLineEdit("3"); self.le_tw_max_cycles.setFixedWidth(80); self.le_tw_max_cycles.setAlignment(Qt.AlignCenter)
-        h_tw_cycles.addWidget(self.le_tw_max_cycles); h_tw_cycles.addWidget(QLabel(" 次 "))
-        tw_layout.addRow(" 最大烘干次数 ", h_tw_cycles)
 
         mid_layout.addWidget(grp_tw)
         main_layout.addLayout(mid_layout)
@@ -299,7 +289,6 @@ class SettingsDialog(QDialog):
         port_layout.addWidget(QLabel(" 串口号 "))
         self.cb_com_port = QComboBox()
         self.cb_com_port.addItems(["COM1", "COM2"])
-        self.cb_com_port.currentTextChanged.connect(self._save_com_port)
         port_layout.addWidget(self.cb_com_port)
         port_layout.addStretch()
         right_bottom.addLayout(port_layout)
@@ -328,10 +317,17 @@ class SettingsDialog(QDialog):
 
         bottom_layout.addLayout(right_bottom)
         main_layout.addLayout(bottom_layout)
-        self._load_params()
 
-    # ---- 参数持久化 ----
-    def _load_params(self):
+        # 连接实时存储信号
+        self._connect_realtime_save()
+
+        self._loading = True
+        try:
+            self._do_load_params()
+        finally:
+            self._loading = False
+
+    def _do_load_params(self):
         """从 SQLite 加载全部试验参数填充到控件"""
         p = load_params()
         # 化验员
@@ -376,14 +372,6 @@ class SettingsDialog(QDialog):
         """实时保存化验员名字到 SQLite"""
         save_tech(idx, text)
 
-
-    def _save_com_port(self, port):
-        """串口号改变时直接存入数据库"""
-        from db import load_params, save_params
-        p = load_params()
-        p["com_port"] = port
-        save_params(**p)
-        print("[SETTINGS] 串口号已保存:", port)
     def _on_aw_const_toggled(self, checked):
         """分析水恒重检查 → 设置精度 / 称量间隔 联动禁用"""
         self.le_aw_prec.setEnabled(checked)
@@ -408,12 +396,17 @@ class SettingsDialog(QDialog):
         """切换测试方式时，优先加载该方法已保存的参数；
         首次使用（无保存记录）才使用工厂默认值。
         """
-        method = self._current_method()
-        mp = load_method_preset(method)
-        if mp:
-            self._fill_from_preset(mp)
-        else:
-            self._apply_factory_defaults(method)
+        self._loading = True
+        try:
+            method = self._current_method()
+            mp = load_method_preset(method)
+            if mp:
+                self._fill_from_preset(mp)
+            else:
+                self._apply_factory_defaults(method)
+        finally:
+            self._loading = False
+            self.save_all_params()
 
     def _fill_from_preset(self, mp):
         """将 method_presets 记录填充到所有控件"""
@@ -440,8 +433,6 @@ class SettingsDialog(QDialog):
         # 功能开关
         self.cb_aw_fan.setChecked(bool(mp.get("aw_fan", 1)))
         self.cb_tw_fan.setChecked(bool(mp.get("tw_fan", 1)))
-        self.le_aw_max_cycles.setText(str(int(mp.get("aw_max_cycles", 3))))
-        self.le_tw_max_cycles.setText(str(int(mp.get("tw_max_cycles", 3))))
         self.cb_retest.setChecked(bool(mp.get("retest", 0)))
         self.cb_autoclear.setChecked(bool(mp.get("autoclear", 1)))
 
@@ -476,37 +467,74 @@ class SettingsDialog(QDialog):
         # 功能开关
         self.cb_aw_fan.setChecked(bool(d["aw_fan"]))
         self.cb_tw_fan.setChecked(bool(d["tw_fan"]))
-        self.le_aw_max_cycles.setText(str(int(d.get("aw_max_cycles", 3))))
-        self.le_tw_max_cycles.setText(str(int(d.get("tw_max_cycles", 3))))
         self.cb_retest.setChecked(bool(d["retest"]))
         self.cb_autoclear.setChecked(bool(d["autoclear"]))
 
     def _restore_factory_defaults(self):
         """默认值按钮：恢复当前方法的工厂默认值"""
-        method = self._current_method()
-        self._apply_factory_defaults(method)
+        self._loading = True
+        try:
+            method = self._current_method()
+            self._apply_factory_defaults(method)
+        finally:
+            self._loading = False
+            self.save_all_params()
+
+    def _connect_realtime_save(self):
+        """将所有输入控件的值变更信号连接到实时保存"""
+        s = self.save_all_params
+        # QLineEdit — 化验员 6 个
+        for le in self.tech_inputs:
+            le.textChanged.connect(s)
+        # 单位 / 样位数量
+        self.le_unit.textChanged.connect(s)
+        self.le_sample_count.textChanged.connect(s)
+        # 分析水控温控时
+        self.le_aw_temp.textChanged.connect(s)
+        self.le_aw_time.textChanged.connect(s)
+        self.cb_aw_const.toggled.connect(s)
+        self.le_aw_prec.textChanged.connect(s)
+        self.le_aw_interval.textChanged.connect(s)
+        # 全水控温控时
+        self.le_tw_temp.textChanged.connect(s)
+        self.le_tw_time.textChanged.connect(s)
+        self.cb_tw_const.toggled.connect(s)
+        self.le_tw_prec.textChanged.connect(s)
+        self.le_tw_interval.textChanged.connect(s)
+        # 称重与校正
+        self.cb_weigh.currentIndexChanged.connect(s)
+        self.le_aw_low.textChanged.connect(s)
+        self.le_aw_high.textChanged.connect(s)
+        self.le_tw_low.textChanged.connect(s)
+        self.le_tw_high.textChanged.connect(s)
+        self.le_aw_corr.textChanged.connect(s)
+        self.le_tw_corr.textChanged.connect(s)
+        # 功能开关
+        self.cb_aw_fan.toggled.connect(s)
+        self.cb_tw_fan.toggled.connect(s)
+        self.cb_retest.toggled.connect(s)
+        self.cb_autoclear.toggled.connect(s)
+        # 串口 / 称重方式
+        self.cb_com_port.currentTextChanged.connect(s)
 
     def save_all_params(self):
-        """保存当前对话框所有参数到数据库（可在关闭前调用）"""
-        import sys; print("[DEBUG] save_all_params called", file=sys.stderr)
+        """实时保存当前对话框所有参数到数据库"""
+        if self._loading:
+            return
         kwargs = {}
         for i in range(6):
             kwargs["tech_" + str(i)] = self.tech_inputs[i].text() if i < len(self.tech_inputs) else ""
-        # 单位
         kwargs["unit"] = self.le_unit.text()
-        # 样位数量（范围校验: 9~50，不在范围内不存入）
         try:
             v = int(self.le_sample_count.text().strip())
             if 9 <= v <= 50:
                 kwargs["sample_count"] = v
         except (ValueError, TypeError):
             pass
-        # 方法
         if self.rb_gb.isChecked(): kwargs["method"] = "gb"
         elif self.rb_kf.isChecked(): kwargs["method"] = "kf"
         else: kwargs["method"] = "custom"
         kwargs["weigh_mode"] = self.cb_weigh.currentIndex()
-        # 分析水
         kwargs["aw_temp"] = float(self.le_aw_temp.text() or "0")
         kwargs["aw_time"] = int(self.le_aw_time.text() or "0")
         kwargs["aw_const_check"] = 1 if self.cb_aw_const.isChecked() else 0
@@ -515,9 +543,7 @@ class SettingsDialog(QDialog):
         kwargs["aw_low"] = float(self.le_aw_low.text() or "0")
         kwargs["aw_high"] = float(self.le_aw_high.text() or "0")
         kwargs["aw_fan"] = 1 if self.cb_aw_fan.isChecked() else 0
-        kwargs["aw_max_cycles"] = int(self.le_aw_max_cycles.text() or "3")
         kwargs["aw_corr"] = float(self.le_aw_corr.text() or "0")
-        # 全水
         kwargs["tw_temp"] = float(self.le_tw_temp.text() or "0")
         kwargs["tw_time"] = int(self.le_tw_time.text() or "0")
         kwargs["tw_const_check"] = 1 if self.cb_tw_const.isChecked() else 0
@@ -526,22 +552,17 @@ class SettingsDialog(QDialog):
         kwargs["tw_low"] = float(self.le_tw_low.text() or "0")
         kwargs["tw_high"] = float(self.le_tw_high.text() or "0")
         kwargs["tw_fan"] = 1 if self.cb_tw_fan.isChecked() else 0
-        kwargs["tw_max_cycles"] = int(self.le_tw_max_cycles.text() or "3")
         kwargs["tw_corr"] = float(self.le_tw_corr.text() or "0")
-        # 其他
-        # 串口号
         kwargs["com_port"] = self.cb_com_port.currentText()
         kwargs["retest"] = 1 if self.cb_retest.isChecked() else 0
         kwargs["autoclear"] = 1 if self.cb_autoclear.isChecked() else 0
         save_params(**kwargs)
-        # 同时保存方法参数到 method_presets
         method = kwargs.get("method", self._current_method())
         preset = {}
         for key in ["aw_temp", "aw_time", "aw_const_check", "aw_prec", "aw_interval",
                      "tw_temp", "tw_time", "tw_const_check", "tw_prec", "tw_interval",
                      "weigh_mode", "aw_low", "aw_high", "tw_low", "tw_high",
                      "aw_corr", "tw_corr", "aw_fan", "tw_fan",
-                     "aw_max_cycles", "tw_max_cycles",
                      "retest", "autoclear"]:
             if key in kwargs:
                 preset[key] = kwargs[key]
@@ -549,10 +570,9 @@ class SettingsDialog(QDialog):
             save_method_preset(method, **preset)
 
     def closeEvent(self, event):
-        """关闭时自动保存所有参数"""
-        self.save_all_params()
+        """关闭对话框"""
         super().closeEvent(event)
-        self.params_changed.emit()  # 主界面异步刷新
+        self.params_changed.emit()
 
 
 # ============================================================

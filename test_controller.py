@@ -57,9 +57,7 @@ class TestConfig:
         self.tw_interval = 5
         self.tw_corr_crucible = 0.0
         self.tw_corr_dry = 0.0
-        # 新增: 最大次数
-        self.aw_max_cycles = 3
-        self.tw_max_cycles = 3
+        # 新增: 氮气/鼓风
         self.tw_tare_weight = 0.0
         self.samples = []  # [(row_idx, name, mode, sample_weight), ...]
         self.beep_enabled = True
@@ -72,7 +70,6 @@ class TestConfig:
         cfg.aw_time = int(db_params.get("aw_time", 60))
         cfg.aw_precision = float(db_params.get("aw_prec", 0.0010))
         cfg.aw_fan = bool(db_params.get("aw_fan", 0))
-        cfg.aw_max_cycles = int(db_params.get("aw_max_cycles", 3))
         cfg.aw_const_check = bool(db_params.get("aw_const_check", 1))
         cfg.aw_interval = int(db_params.get("aw_interval", 5))
         cfg.aw_corr_crucible = float(db_params.get("aw_corr", 0.0))
@@ -81,7 +78,6 @@ class TestConfig:
         cfg.tw_time = int(db_params.get("tw_time", 60))
         cfg.tw_precision = float(db_params.get("tw_prec", 0.0030))
         cfg.tw_fan = bool(db_params.get("tw_fan", 1))
-        cfg.tw_max_cycles = int(db_params.get("tw_max_cycles", 3))
         cfg.tw_const_check = bool(db_params.get("tw_const_check", 1))
         cfg.tw_interval = int(db_params.get("tw_interval", 5))
         cfg.tw_corr_crucible = float(db_params.get("tw_corr", 0.0))
@@ -380,10 +376,6 @@ class TestWorker(QObject):
     @property
     def _dry_cfg_precision(self):
         return self.cfg.aw_precision if self._is_aw else self.cfg.tw_precision
-
-    @property
-    def _dry_cfg_max_cycles(self):
-        return self.cfg.aw_max_cycles if self._is_aw else self.cfg.tw_max_cycles
 
     @property
     def _dry_cfg_const_check(self):
@@ -814,7 +806,7 @@ class TestWorker(QObject):
             return
 
         precision = self._dry_cfg_precision
-        max_cycles = self._dry_cfg_max_cycles
+        max_cycles = 3
         all_passed = True
 
         for row_idx, dry_weight in weigh_results:
