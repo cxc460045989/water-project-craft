@@ -566,7 +566,7 @@ class TestWorker(QObject):
         return moisture, float(m1)
 
     def _finalize_experiment(self):
-        """测试完成收尾: 计算水分(银行舍入+校正+反算)→写 experiment_results→开炉门
+        """测试完成收尾: 计算水分(银行舍入+校正+反算)→写 experiment_results→开炉盖
 
         水分公式:
           样品重量记作 m
@@ -682,9 +682,9 @@ class TestWorker(QObject):
             update_experiment_status(eid, "done")
             _log("finalize: 实验状态更新为 done")
 
-            # 自动开炉门
-            self._send_long_duration_cmd(CMD.OPEN_LID, desc="实验完成开炉门")
-            self.sig_status_msg.emit("实验完成, 炉门已打开")
+            # 自动开炉盖
+            self._send_cmd_code_with_uplink_check(CMD.OPEN_LID, desc="实验完成开炉盖")
+            self.sig_status_msg.emit("实验完成, 炉盖已打开")
 
         except Exception as e:
             _log("finalize 失败: %s" % str(e))

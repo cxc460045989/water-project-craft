@@ -148,7 +148,9 @@ class MockInstrumentSimulator:
             self._plate_pos = 1
             self._weight = 0.0
             self._tare_offset = 0.0
-            self._in_sample_phase = False
+            # 水分测试进行中不清除样品阶段标记，保证后续称重返回样品重量
+            if not self._moisture_testing:
+                self._in_sample_phase = False
         elif fc == CMD.SAMPLE_PLATE_DOWN:
             self._plate_pos = 0
             # 获取当前样位的坩埚重量(按样位确定，保证每次一致)
@@ -215,6 +217,7 @@ class MockInstrumentSimulator:
         elif fc in (CMD.MOISTURE_TEST_1, CMD.MOISTURE_TEST_2):
             self._moisture_testing = True
             self._weigh_mode = False
+            self._in_sample_phase = True  # 启动测试后后续称重均返回样品重量
         elif 0x35 <= fc <= 0x9C:  # move_to
             pos = fc - 0x34
             if 1 <= pos <= 99:
