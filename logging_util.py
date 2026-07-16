@@ -18,9 +18,12 @@ _LOG_FILE = os.path.join(_LOG_DIR, "app.log")
 _MAX_BYTES = 5 * 1024 * 1024
 
 _FILE_TAGS = frozenset([
-    "[SERIAL]", "[WEIGH]", "[HARDWARE]", "[UPLINK]",
-    "[DB-WEIGH]", "[DB]", "[MAIN]", "[SETTINGS]",
-    "[TABLE]",
+    "[SERIAL]", "[WEIGH]", "[HARDWARE]",
+    "[DB]", "[DB-CELL]", "[TABLE]", "[RESTORE]",
+    "[APPEND]", "[APPEND-V2]", "[CMD]",
+    "[BATCH_WEIGH]", "[CONST_WEIGHT]",
+    "[TEMP_CTRL]", "[PROCESS]",
+    "[QUERY]", "[PRINT]",
 ])
 
 def _ensure_log_dir():

@@ -1460,7 +1460,17 @@ class MoistureAnalyzer(QMainWindow):
                 ctrl.sig_weight_out_of_range.connect(on_range_warning)
                 ctrl.sig_confirm_weigh.connect(lambda row, name, w: dlg.show_individual_weighing(row, name, w))
                 dlg.confirm_weigh_clicked.connect(ctrl.confirm_current_weigh)
-                dlg.rejected.connect(ctrl.stop)
+                def on_phase2_reject():
+                    """阶段2取消: 停止称量 → 样盘上升 → 解除称重 → 恢复按钮"""
+                    ctrl.stop()
+                    from protocol_layer import CommandBuilder, CMD, send_cmd_with_uplink_check
+                    cmd_up = CommandBuilder.build_command(CMD.SAMPLE_PLATE_UP)
+                    send_cmd_with_uplink_check(self.serial_mgr, cmd_up, "样盘上升")
+                    cmd_exit = CommandBuilder.build_command(CMD.EXIT_WEIGH_MODE)
+                    send_cmd_with_uplink_check(self.serial_mgr, cmd_exit, "解除称重状态")
+                    self._on_append_finished(True, "追加样品已取消")
+
+                dlg.rejected.connect(on_phase2_reject)
 
                 ctrl.start_individual_sample_weigh(valid_rows)
 

@@ -137,17 +137,28 @@ class SampleAppendWorker(QObject):
         self._step3_tare_stable()
 
     def _step3_tare_stable(self):
+        """样盘下降后稳定5s, 持续主动读取天平数据（对齐 weigh_controller._wait_descend_and_read）"""
         self.sig_status_update.emit("步骤3: 等待坩埚重量稳定5s...")
-        _log("[步骤3] 下降到位, 等待5秒稳定")
-        self._step_timer_type = "delay"
-        self._step_timer_target = self._step4_tare_read
-        self._step_timer_count = 0
-        self._step_timer_max = 25  # 25 ticks at 200ms = 5s
-        self._step_timer.start(200)
+        _log("[步骤3] 下降到位, 等待5秒稳定, 持续读取天平数据")
+        start = time.time()
+        weight = self._current_weight
+        while time.time() - start < STABLE_WAIT_S:
+            if not self._running:
+                return
+            w = self._read_serial_weight()
+            if w is not None:
+                weight = w
+                self._current_weight = w
+                self.sig_weight_update.emit(w)
+                _log("[步骤3] 稳定读数: %.4fg" % w)
+            time.sleep(0.5)
+        self._current_weight = weight
+        self._step4_tare_read()
 
     # ===== 步骤4: 坩埚重量采集入库 =====
 
     def _step4_tare_read(self):
+        """读取最终坩埚重量（取最近N次均值滤波），写入DB"""
         weight = self._read_stable_weight()
         self._tare_weight = _format_weight(weight)
         _log("[步骤4] 坩埚重: %.4fg" % self._tare_weight)
@@ -315,13 +326,35 @@ class SampleAppendWorker(QObject):
         except Exception as e:
             _log("[安全] 发送失败: %s" % str(e))
 
+    def _read_serial_weight(self):
+        """主动从串口读取天平重量（不依赖信号槽，对齐 weigh_controller._read_uplink_weight）"""
+        try:
+            raw = self._serial.read_all()
+        except Exception:
+            return None
+        if not raw:
+            return None
+        frames = self._uplink_buf.feed(raw)
+        if frames:
+            self._last_uplink_time = time.time()
+        if not frames:
+            return None
+        f = frames[-1]
+        if f is not None:
+            return f["weight"]
+        return None
+
     def _read_stable_weight(self):
-        """读取当前稳定天平重量(最近5次均值)"""
+        """读取当前稳定天平重量（主动轮询+最近5次均值滤波）"""
         samples = []
         for _ in range(15):
             if not self._running:
                 return self._current_weight
-            samples.append(self._current_weight)
+            w = self._read_serial_weight()
+            if w is not None:
+                samples.append(w)
+            else:
+                samples.append(self._current_weight)
             time.sleep(0.1)
         if samples:
             return sum(samples[-5:]) / 5.0

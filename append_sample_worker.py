@@ -7,7 +7,7 @@
 独立 QThread 封装，仅负责阶段1（单坩埚称量），阶段2 复用现有 WeighController。
 
 流程:
-  阶段1 单坩埚称量: 发校正值 → 移样位 → 清零 → 样盘下降 → 读数（全程开盖，不抬样盘）
+  阶段1 单坩埚称量: 移样位 → 清零 → 样盘下降 → 稳定读数（全程开盖，不抬样盘）
   阶段2 单样品称量: 由 main_app 创建 WeighController.start_individual_sample_weigh() 负责
 
 依赖: protocol_layer.py, serial_comm.py, db.py（仅 import 调用，不修改）
@@ -16,7 +16,7 @@
 import time
 from PySide2.QtCore import QThread, Signal
 
-from protocol_layer import CommandBuilder, CMD, UplinkBuffer, send_cmd_with_uplink_check
+from protocol_layer import CommandBuilder, CMD, send_cmd_with_uplink_check
 from logging_util import logger
 
 # ======== 可配置常量 ========
@@ -32,7 +32,7 @@ def _log(msg):
 class AppendSampleWorker(QThread):
     """追加样品 — 阶段1 坩埚称量工作线程
 
-    仅负责: 发送校正值 → 移动到目标工位 → 天平清零 →
+    仅负责: 移动到目标工位 → 天平清零 →
             样盘下降 → 稳定读数 → 坩埚重回填（全程开盖，不抬样盘）
 
     信号:
@@ -55,7 +55,6 @@ class AppendSampleWorker(QThread):
         self._name = name
         self._mode = mode
         self._running = False
-        self._uplink_buf = UplinkBuffer()
 
     # ================================================================
     # 入口
@@ -87,38 +86,30 @@ class AppendSampleWorker(QThread):
     # ================================================================
 
     def _do_tare(self):
-        """单坩埚称量: 校正值→移位→清零→下降→读数（全程开盖，不抬样盘）"""
+        """单坩埚称量: 移位→清零→下降→读数（全程开盖，不抬样盘，不发送校正值）"""
         _log("坩埚称量: row=%d name=%s" % (self._row, self._name))
         position = self._row + 1
 
-        # 1. 发送坩埚校正值
-        corr_w = self._get_crucible_correction_weight()
-        if corr_w > 0:
-            _log("发送坩埚校正值: %.4fg" % corr_w)
-            corr_cmd = CommandBuilder.build_send_weight(corr_w)
-            send_cmd_with_uplink_check(self._serial, corr_cmd, "坩埚校正值")
-            self._sleep(CMD_INTERVAL_S)
-
-        # 2. 通知 UI 进入坩埚称量显示
+        # 1. 通知 UI 进入坩埚称量显示
         self.sig_progress.emit({"phase": "tare", "row": self._row,
                                 "name": self._name, "weight": 0.0})
         self._send_move_to(position)
         self._sleep(CMD_INTERVAL_S)
         self._sleep(1.0)
 
-        # 3. 天平清零
+        # 2. 天平清零
         self._send_cmd(CMD.TARE, "天平清零")
         _log("天平清零已发送")
 
-        # 4. 样盘下降 + 等待稳定读数
+        # 3. 样盘下降 + 等待稳定读数
         weight = self._wait_descend_and_read()
         _log("坩埚重量: %.4fg" % weight)
 
-        # 5. 回填坩埚重到表格 + 数据库
+        # 4. 回填坩埚重到表格 + 数据库
         self._backfill_tare(weight)
         _log("坩埚称量完成: %.4fg（样盘未抬）" % weight)
 
-        # 通知完成（不带消息，main_app 直接转阶段2）
+        # 通知完成（5s延迟已移至 weigh_controller._individual_sample 称重界面内）
         self.sig_done.emit(True, "")
 
     # ================================================================
@@ -144,23 +135,27 @@ class AppendSampleWorker(QThread):
     # ================================================================
 
     def _read_uplink_weight(self):
+        """主动读取串口天平数据（对齐 weigh_controller._read_uplink_weight: 每次新建 UplinkBuffer）"""
         try:
             raw = self._serial.read_all()
         except Exception:
             return 0.0, False
         if not raw:
             return 0.0, False
-        frames = self._uplink_buf.feed(raw)
+        from protocol_layer import UplinkBuffer, FrameParser
+        buf = UplinkBuffer()
+        frames = buf.feed(raw)
         if frames:
             self._serial.update_uplink_time()
         if not frames:
             return 0.0, False
         f = frames[-1]
         if f is not None:
+            self._serial.update_uplink_time()
             raw_str = f.get("raw_str", "?")
             if not hasattr(self, "_last_uplink_raw") or self._last_uplink_raw != raw_str:
-                _log("上行帧: raw=%s 重量=%.4fg 温度=%.1fC 联机=%s" %
-                     (raw_str, f["weight"], f["temperature"], f["online"]))
+                _log("上行帧: raw=%s 重量=%.4fg 温度=%.1fC 联机=%s 按键=%s" %
+                     (raw_str, f["weight"], f["temperature"], f["online"], f["btn_pressed"]))
                 self._last_uplink_raw = raw_str
         return f["weight"], True
 
@@ -192,6 +187,11 @@ class AppendSampleWorker(QThread):
                     "name": self._name, "weight": display
                 })
             self._sleep(0.5)
+        # 5s 结束后取一次最新读数作为最终坩埚重
+        final_w, final_ok = self._read_uplink_weight()
+        if final_ok:
+            weight = final_w
+            _log("最终读数: %.4fg" % weight)
         return round(weight, 4)
 
     # ================================================================
@@ -220,17 +220,6 @@ class AppendSampleWorker(QThread):
     # ================================================================
     # 辅助方法
     # ================================================================
-
-    def _get_crucible_correction_weight(self):
-        """从 DB 读取坩埚校正值"""
-        try:
-            from db import load_params
-            p = load_params()
-            aw = float(p.get("aw_corr", 0.0))
-            tw = float(p.get("tw_corr", 0.0))
-            return aw if aw > 0 else tw
-        except Exception:
-            return 0.0
 
     def _sleep(self, secs):
         if secs <= 0:
