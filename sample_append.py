@@ -1,4 +1,8 @@
 ﻿# -*- coding: utf-8 -*-
+# ============================================================
+# @CRAFT-MARKER: 追加样品
+# 快速定位标记 - 请勿删除
+# ============================================================
 """追加样品功能模块 - 微机全自动水分测定仪
 完整串口控制流程：移动样位 -> 称坩埚 -> 称样品 -> 存储
 依赖: protocol_layer.py, serial_comm.py, db.py
@@ -154,14 +158,22 @@ class SampleAppendWorker(QObject):
     # ===== 步骤5: 进入样品称量 =====
 
     def _step5_sample_prompt(self):
-        self.sig_status_update.emit("步骤5: 请添加样品, 开始称量")
-        _log("[步骤5] 进入样品称量")
-        cmd = CommandBuilder.build_command(CMD.ENTER_WEIGH_MODE)
-        self._send_cmd_with_uplink_check(cmd, "进入称量样重状态", callback=self._step5_tare2)
+        """坩埚称量完成 → 不抬样盘 → 延迟5s → 清零 → 进入称重 → 蜂鸣 → 单独称量"""
+        self.sig_status_update.emit("步骤5: 坩埚称量完成, 等待5秒...")
+        _log("[步骤5] 坩埚称量完成, 延迟5秒")
+        self._start_timer(5000, self._step5_tare_first)
 
-    def _step5_tare2(self):
+    def _step5_tare_first(self):
+        self.sig_status_update.emit("步骤5: 天平清零...")
+        _log("[步骤5] 天平清零")
         cmd = CommandBuilder.build_command(CMD.TARE)
-        self._send_cmd_with_uplink_check(cmd, "天平清零", callback=self._step5_beeper)
+        self._send_cmd_with_uplink_check(cmd, "天平清零", callback=self._step5_enter_weigh_mode)
+
+    def _step5_enter_weigh_mode(self):
+        self.sig_status_update.emit("步骤5: 进入称重状态...")
+        _log("[步骤5] 进入称重状态")
+        cmd = CommandBuilder.build_command(CMD.ENTER_WEIGH_MODE)
+        self._send_cmd_with_uplink_check(cmd, "进入称量样重状态", callback=self._step5_beeper)
 
     def _step5_beeper(self):
         cmd = CommandBuilder.build_command(CMD.BEEPER_1S)
