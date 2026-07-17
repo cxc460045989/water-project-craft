@@ -13,6 +13,7 @@
 
 import time
 from PySide2.QtCore import QObject, Signal, QTimer
+from PySide2.QtWidgets import QApplication
 from protocol_layer import CommandBuilder, CMD, UplinkBuffer
 from logging_util import logger
 
@@ -237,6 +238,7 @@ class TestWorker(QObject):
         self._safe_send_cmd(CMD.N2_OFF, "关氮气")
         self._safe_send_cmd(CMD.GAS_ALL_OFF, "关闭全部气体")
         self._safe_send_cmd(CMD.BEEPER_OFF, "关蜂鸣")
+        self._safe_send_cmd(CMD.RESET, "仪器复位")
 
     def pause_test(self):
         self._paused = True
@@ -283,7 +285,7 @@ class TestWorker(QObject):
     # ================================================================
 
     def _step_initial_weigh(self):
-        """复检样品重量: 执行完整批量称重(坩埚→样品)→写入表格"""
+        """复检样品重量: 关盖→倒计时→跳过坩埚称重→直接称样品→不开盖不抬盘→写入表格"""
         self.sig_step_progress.emit("复检称重...")
         self.sig_status_msg.emit("正在复检称重...")
         _log("步骤1: 复检称重, 样品数=%d" % len(self.cfg.samples))
@@ -293,51 +295,47 @@ class TestWorker(QObject):
             self._transition(_Phase.BRANCH_AW)
             return
 
-        # 关炉盖, 准备称重
+        sample_rows = [(r, n, m, s) for r, n, m, s in self.cfg.samples]
+
+        # 关炉盖 + 逐秒倒计时(真机15s, mock 3s)
         self._send_cmd_code_with_uplink_check(CMD.CLOSE_LID, "关炉盖(复检准备)")
-        time.sleep(0.5)
+        lid_wait = int(_ts(15, 3))
+        for remaining in range(lid_wait, 0, -1):
+            if not self._running:
+                return
+            self.sig_status_msg.emit("正在关闭炉盖倒计时 %ds" % remaining)
+            QApplication.processEvents()  # 强制刷新UI, 避免sleep阻塞事件循环
+            time.sleep(1)
 
-        # ---- 阶段1: 称坩埚(除校正坩埚外的所有样品) ----
-        self.sig_status_msg.emit("复检: 称坩埚重...")
-        sample_rows = [(r, n, m, s) for r, n, m, s in self.cfg.samples if r > 0]
+        # 跳过坩埚称重和开盖放样, 直接称样品(坩埚重从DB读取)
+        self._send_cmd_code_with_uplink_check(CMD.ENTER_WEIGH_MODE, "进入称重模式(复检)")
+        self.sig_status_msg.emit("正在称样品重...")
+        QApplication.processEvents()
         for row_idx, name, mode, sample_weight in sample_rows:
             if not self._running:
                 return
-            dry = self._weigh_single(row_idx, name, 0.0, desc="复检坩埚")
-            if dry is not None:
-                self._backfill_table(row_idx, 2, dry)  # col2=坩埚重
-                _log("复检坩埚 row=%d name=%s tare=%.4f" % (row_idx, name, dry))
+            # 行0校正坩埚: 样重=天平读数, 不减坩埚重
+            tare = 0.0 if row_idx == 0 else self._get_tare_from_db(row_idx)
 
-        # 样盘上升, 开炉盖提示放样
-        self._safe_send_cmd(CMD.SAMPLE_PLATE_UP, "样盘上升")
-        self._send_cmd_code_with_uplink_check(CMD.OPEN_LID, "开炉盖(放样)")
-        self._send_cmd_code_with_uplink_check(CMD.BEEPER_1S, "蜂鸣提示")
-        self.sig_status_msg.emit("请放入样品, 然后继续...")
-        # 等待用户放样(简化: 等3秒)
-        time.sleep(_ts(5.0, 2.0))
-
-        # 关炉盖
-        self._send_cmd_code_with_uplink_check(CMD.CLOSE_LID, "关炉盖")
-        time.sleep(0.5)
-
-        # ---- 阶段2: 称样品 ----
-        self.sig_status_msg.emit("复检: 称样品重...")
-        for row_idx, name, mode, sample_weight in sample_rows:
-            if not self._running:
-                return
-            tare = self._get_tare_from_db(row_idx)
-            total = self._weigh_single(row_idx, name, tare, desc="复检样品")
+            self.sig_status_msg.emit("正在复检%d号样品重量：" % (row_idx + 1))
+            QApplication.processEvents()
+            # 实时回调: 等待稳定期间每秒推送当前净重到UI
+            t = tare  # 闭包捕获
+            ridx = row_idx
+            def _on_weight_sample(w):
+                net = round(w - t, 4) if t else round(w, 4)
+                self.sig_status_msg.emit("正在复检%d号样品重量：%.4fg" % (ridx + 1, net))
+                QApplication.processEvents()  # 强制刷新UI
+            total = self._weigh_single(row_idx, name, tare, desc="复检样品", progress_cb=_on_weight_sample, timeout=_ts(15.0, 5.0), min_duration=_ts(5.0, 5.0))
             if total is not None:
-                sample_net = round(total, 4)  # _weigh_single 已减去tare, 返回净重
-                # 实际上 _weigh_single 返回 dry = reading - tare + offset
-                # 对于复检样品: dry = total_reading - tare + 0 = sample_net_weight
+                sample_net = round(total, 4)
                 self._backfill_table(row_idx, 3, sample_net)  # col3=样重
+                # 最终值再确认一次显示
+                self.sig_status_msg.emit("正在复检%d号样品重量：%.4fg" % (ridx + 1, sample_net))
+                QApplication.processEvents()
                 _log("复检样品 row=%d name=%s sample=%.4f" % (row_idx, name, sample_net))
 
-        self._safe_send_cmd(CMD.SAMPLE_PLATE_UP, "样盘上升")
-        self._send_cmd_code_with_uplink_check(CMD.OPEN_LID, "开炉盖(复检完成)")
-        self._send_cmd_code_with_uplink_check(CMD.BEEPER_1S, "蜂鸣提示")
-
+        # 不开盖、不抬样盘, 直接进入控温流程(最终测试完成复位时才开盖抬盘)
         _log("复检称重完成, 共 %d 个样品" % len(sample_rows))
         self.sig_initial_weigh_done.emit()
         self._transition(_Phase.BRANCH_AW)
@@ -448,18 +446,18 @@ class TestWorker(QObject):
         fan = self._dry_cfg_fan
         temp = self._dry_cfg_temp
 
-        _log("烘干启动: mode=%s cycle=%d fan=%s temp=%dC" %
+        _log("烘干启动: mode=%s cycle=%d fan=%s temp=%d℃" %
              (mode, self._dry_cycle + 1, fan, temp))
 
         if fan:
             self._safe_send_cmd(CMD.FAN_ON, "开鼓风")
 
-        self.sig_status_msg.emit("%s 第%d轮烘干, 目标%dC" %
+        self.sig_status_msg.emit("%s 第%d轮烘干, 目标%d℃" %
                                   (mode, self._dry_cycle + 1, temp))
 
         self._cmd_is_temp = False
         cmd = CommandBuilder.build_temp_control(temp)
-        self._send_cmd_with_uplink_check(cmd, "控温 %dC" % temp,
+        self._send_cmd_with_uplink_check(cmd, "控温 %d℃" % temp,
                                           callback=self._send_start_test_and_patrol)
 
     def _start_temp_patrol(self):
@@ -468,8 +466,8 @@ class TestWorker(QObject):
             return
         self._dry_sub_state = _DrySubState.TEMP_PATROL
         self._last_patrol_time = time.time()
-        self.sig_status_msg.emit("正在控温... 目标%dC" % self._temp_target)
-        _log("正在控温, 目标=%dC, 间隔=%ds" % (self._temp_target, TEMP_PATROL_INTERVAL_S))
+        self.sig_status_msg.emit("正在控温... 目标%d℃" % self._temp_target)
+        _log("正在控温, 目标=%d℃, 间隔=%ds" % (self._temp_target, TEMP_PATROL_INTERVAL_S))
         self._patrol_timer.start(TEMP_PATROL_INTERVAL_S * 1000)
 
     def _on_patrol_tick(self):
@@ -483,16 +481,16 @@ class TestWorker(QObject):
         if self._cmd_is_temp:
             cmd = CommandBuilder.build_temp_control(self._temp_target)
             self._send_cmd_with_uplink_check(cmd,
-                                              "正在控温: 控温 %dC" % self._temp_target,
+                                              "正在控温: 控温 %d℃" % self._temp_target,
                                               callback=None)
         else:
             test_cmd = CMD.MOISTURE_TEST_1 if self._dry_cfg_fan else CMD.MOISTURE_TEST_2
             self._send_cmd_code_with_uplink_check(test_cmd,
                                                    "正在控温: 开始测试(%s)" % ("鼓风" if self._dry_cfg_fan else "氮气"))
-        _log("正在控温: 当前=%.1fC 目标=%dC" % (self._current_temp, self._temp_target))
+        _log("正在控温: 当前=%.1f℃ 目标=%d℃" % (self._current_temp, self._temp_target))
 
         if self._current_temp >= (self._temp_target - 5):
-            _log("温度达标 %.1fC >= %dC, 转入恒温保持" %
+            _log("温度达标 %.1f℃ >= %d℃, 转入恒温保持" %
                  (self._current_temp, self._temp_target - 5))
             self._patrol_timer.stop()
             self._start_hold()
@@ -533,8 +531,8 @@ class TestWorker(QObject):
         self._dry_sub_state = _DrySubState.WEIGH
         self._safe_send_cmd(CMD.FAN_OFF, "关鼓风")
         self._safe_send_cmd(CMD.N2_OFF, "关氮气")
-        self.sig_step_progress.emit("恒温结束, 开始称量")
-        self.sig_status_msg.emit("称量中...")
+        self.sig_step_progress.emit("开始称量")
+        self.sig_status_msg.emit("正在称量...")
         _log("恒温结束, 开始称量 %d 个样品" % len(self._samples))
         self._do_weighing()
 
@@ -814,7 +812,7 @@ class TestWorker(QObject):
             if self._cmd_is_temp:
                 cmd = CommandBuilder.build_temp_control(self._temp_target)
                 self._send_cmd_with_uplink_check(cmd,
-                                                  "恒温: 控温 %dC" % self._temp_target,
+                                                  "恒温: 控温 %d℃" % self._temp_target,
                                                   callback=None)
             else:
                 test_cmd = CMD.MOISTURE_TEST_1 if self._dry_cfg_fan else CMD.MOISTURE_TEST_2
@@ -840,19 +838,31 @@ class TestWorker(QObject):
                 self._current_temp = f["temperature"]
                 self._current_weight = f["weight"]
                 self.sig_temp_update.emit(f["temperature"])
+                # 温度日志节流: 每3s最多一条
+                now = time.time()
+                last_log = getattr(self, "_last_temp_log_time", 0)
+                temp_val = f["temperature"]
+                if now - last_log >= 3.0 or \
+                   getattr(self, "_last_logged_temp", -999) != round(temp_val, 1):
+                    _log("温度更新: %.1f℃" % temp_val)
+                    self._last_temp_log_time = now
+                    self._last_logged_temp = round(temp_val, 1)
 
         # TEMP_PATROL状态下200ms tick也检查温度(快速响应)
         if self._dry_sub_state == _DrySubState.TEMP_PATROL:
             if self._current_temp >= (self._temp_target - 5):
-                _log("温度达标 %.1fC(200ms tick检测)" % self._current_temp)
+                _log("温度达标 %.1f℃(200ms tick检测)" % self._current_temp)
                 self._patrol_timer.stop()
                 self._start_hold()
 
     # ========= 称量流程 =========
 
-    def _weigh_single(self, row_idx, name, tare_weight, desc=""):
+    def _weigh_single(self, row_idx, name, tare_weight, desc="", progress_cb=None, timeout=None, min_duration=0):
         """单样位称重: 移动→去皮→样盘下降→稳定→读数, 与批量称重流程一致
 
+        progress_cb(weight): 每次采样时回调, 用于实时更新UI重量显示
+        timeout: 稳定等待超时(秒), None则使用默认 _ts(15, 3)
+        min_duration: 最短等待秒数
         返回: dry_weight (g) 或 None
         """
         pos = row_idx + 1
@@ -864,7 +874,7 @@ class TestWorker(QObject):
         time.sleep(1.0)
 
         # 2. 天平清零(去皮)
-        self._safe_send_cmd(CMD.TARE, "天平清零")
+        self._send_cmd_code_with_uplink_check(CMD.TARE, "天平清零")
         time.sleep(0.3)
 
         # 3. 样盘下降
@@ -873,7 +883,7 @@ class TestWorker(QObject):
 
         # 4. 等待稳定读数(5s)
         _log("等待稳定读数 5s...")
-        stable_weight = self._wait_stable_weight(timeout=_ts(15.0, 3.0))
+        stable_weight = self._wait_stable_weight(timeout=timeout if timeout is not None else _ts(15.0, 3.0), progress_cb=progress_cb, min_duration=min_duration)
         if stable_weight is None:
             self.sig_error.emit("称量失败 row=%d %s" % (row_idx, name))
             return None
@@ -1013,6 +1023,9 @@ class TestWorker(QObject):
             self.sig_error.emit("指令发送失败: " + desc)
             return
         _log("指令已发送: %s" % desc)
+        # 指令发送过程中 send_cmd_with_uplink_check 内部会消耗上行帧,
+        # 补读一帧确保温度/重量实时更新到UI
+        self._drain_uplink_for_ui()
         if callback:
             QTimer.singleShot(int(CMD_INTERVAL_S * 1000), callback)
 
@@ -1020,6 +1033,21 @@ class TestWorker(QObject):
         """发送固定4字节指令(统一入口, 去握手)"""
         cmd = CommandBuilder.build_command(func_code)
         self._send_cmd_with_uplink_check(cmd, desc, callback)
+
+    def _drain_uplink_for_ui(self):
+        """补读串口上行帧, 更新温度/重量到UI
+        send_cmd_with_uplink_check 内部会消耗上行帧, 补读一帧确保UI不丢数据
+        """
+        try:
+            raw = self._serial.read_all()
+        except Exception:
+            return
+        if not raw:
+            return
+        buf = UplinkBuffer()
+        frames = buf.feed(raw)
+        for f in frames:
+            self.sig_temp_update.emit(f["temperature"])
 
     def _safe_send_cmd(self, func_code, desc):
         """安全发送指令(不阻塞，允许失败)"""
@@ -1033,11 +1061,13 @@ class TestWorker(QObject):
         except Exception as e:
             _log("安全发送失败: " + str(e))
 
-    def _wait_stable_weight(self, timeout=None):
+    def _wait_stable_weight(self, timeout=None, progress_cb=None, min_duration=0):
         if timeout is None:
             timeout = _ts(15.0, 3.0)
         """等待天平读数稳定, 返回均值
         连续N次波动<=容差判定稳定
+        progress_cb(weight): 每次采样时回调
+        min_duration: 最短等待秒数, 即使提前稳定也继续采样
         """
         samples = []
         start = time.time()
@@ -1048,7 +1078,10 @@ class TestWorker(QObject):
             if weight is not None:
                 samples.append(weight)
                 self.sig_weight_update.emit(weight)
-                if len(samples) >= STABLE_WEIGHT_SAMPLES:
+                if progress_cb:
+                    progress_cb(weight)
+                # 仅在 min_duration 过后才检查稳定性
+                if (time.time() - start) >= min_duration and len(samples) >= STABLE_WEIGHT_SAMPLES:
                     recent = samples[-STABLE_WEIGHT_SAMPLES:]
                     if max(recent) - min(recent) <= STABLE_TOLERANCE:
                         return sum(recent) / len(recent)
@@ -1069,7 +1102,13 @@ class TestWorker(QObject):
         frames = buf.feed(raw)
         if frames:
             self._last_uplink_time = time.time()
-            return frames[-1]["weight"]
+            w = frames[-1]["weight"]
+            # 节流: 1s 最多一条天平读数日志
+            now = time.time()
+            if now - getattr(self, "_last_weight_log_time", 0) >= 1.0:
+                _log("天平读数: %.4fg" % w)
+                self._last_weight_log_time = now
+            return w
         return None
 
     # ========= 数据持久化 =========

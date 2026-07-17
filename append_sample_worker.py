@@ -88,6 +88,7 @@ class AppendSampleWorker(QThread):
     def _do_tare(self):
         """单坩埚称量: 移位→清零→下降→读数（全程开盖，不抬样盘，不发送校正值）"""
         _log("坩埚称量: row=%d name=%s" % (self._row, self._name))
+        self._send_cmd(CMD.RESET, "仪器复位")
         position = self._row + 1
 
         # 1. 通知 UI 进入坩埚称量显示

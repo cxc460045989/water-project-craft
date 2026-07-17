@@ -380,22 +380,22 @@ class MoistureAnalyzer(QMainWindow):
         self._build_toolbar(lo)
         lo.addSpacing(6)
         self._build_content(lo)
-        # ---- 底部信息栏（默认隐藏） ----
-        self.progress_label = QLabel("")
-        self.progress_label.setStyleSheet("font-size: 22px; font-weight: bold; color: #2B579A; padding: 0 8px;")
+        # ---- 底部信息栏 ----
         self.progress_data = QLabel("")
-        self.progress_data.setStyleSheet("font-size: 22px; color: #1F2937; padding: 0 8px;")
+        self.progress_data.setAlignment(Qt.AlignVCenter)
+        self.progress_data.setStyleSheet("font-size: 22px; color: #1F2937; padding: 0 8px 4px 8px;")
         info_bar = QWidget()
         info_bar.setObjectName("bottomInfoBar")
-        info_bar.setFixedHeight(52)
+        info_bar.setStyleSheet("#bottomInfoBar { margin-top: -10px; padding: 6px 0 14px 0; }")
         info_lo = QHBoxLayout(info_bar)
         info_lo.setContentsMargins(16,0,16,0)
         info_lo.setSpacing(8)
-        info_lo.addWidget(self.progress_label)
+        info_lo.setAlignment(Qt.AlignVCenter)
         info_lo.addWidget(self.progress_data, 1)
         self.progress_widget = info_bar
         self.progress_widget.setVisible(True)
         lo.addWidget(self.progress_widget)
+        lo.addSpacing(12)
         # ---- 串口管理器 (Mock 模式) ----
         self._uplink_buf = UplinkBuffer()
         self.serial_mgr = SerialManager(parent=self, use_mock=False)
@@ -470,17 +470,19 @@ class MoistureAnalyzer(QMainWindow):
 
     def _init_test_signals(self):
         """连接 TestController 全部信号到 UI"""
-        self.test_ctrl.sig_status_msg.connect(self.progress_data.setText)
-        self.test_ctrl.sig_error.connect(lambda m: self.progress_data.setText("错误: " + m))
+        self.test_ctrl.sig_status_msg.connect(self._on_status_msg)
+        self.test_ctrl.sig_error.connect(lambda m: self.progress_data.setText("<span style='color:#2B579A;font-weight:bold'>测试进度：</span>错误: " + m))
         self.test_ctrl.sig_temp_update.connect(self._on_test_temp_update)
         self.test_ctrl.sig_hold_countdown.connect(self._on_hold_countdown)
         self.test_ctrl.sig_hold_started.connect(self._on_hold_started)
         self.test_ctrl.sig_test_done.connect(self._on_test_done)
         self.test_ctrl.sig_const_check_result.connect(self._on_const_check_result)
-        self.test_ctrl.sig_phase_changed.connect(
-            lambda p: self.progress_label.setText(p))
+        self.test_ctrl.sig_phase_changed.connect(lambda p: None)  # 阶段切换不单独显示
         self.test_ctrl.sig_weigh_result.connect(self._on_test_weigh_result)
         self.test_ctrl.sig_initial_weight.connect(self._on_initial_weight)
+
+    def _on_status_msg(self, msg):
+        self.progress_data.setText("<span style='color:#2B579A;font-weight:bold'>测试进度：</span>" + msg)
 
     def _on_test_temp_update(self, temp):
         """测试期间温度实时更新到界面"""
@@ -489,20 +491,19 @@ class MoistureAnalyzer(QMainWindow):
     def _on_hold_countdown(self, remaining):
         mins = remaining // 60
         secs = remaining % 60
-        self.progress_data.setText("恒温倒计时: %02d:%02d" % (mins, secs))
+        self.progress_data.setText("<span style='color:#2B579A;font-weight:bold'>测试进度：</span>恒温倒计时 %02d:%02d" % (mins, secs))
 
     def _on_hold_started(self, total):
         """恒温保持启动: 显示总倒计时"""
         mins = total // 60
         secs = total % 60
-        self.progress_data.setText("恒温保持 %02d:%02d" % (mins, secs))
+        self.progress_data.setText("<span style='color:#2B579A;font-weight:bold'>测试进度：</span>恒温保持 %02d:%02d" % (mins, secs))
 
     def _on_test_done(self):
         self.btn_start.setEnabled(True)
         self.btn_start.setText("开始测试")
         self.btn_stop.setEnabled(False)
-        self.progress_label.setText("")
-        self.progress_data.setText("测试完成")
+        self.progress_widget.setVisible(False)
         # 延迟刷新表格, 确保 _finalize_experiment 的 DB 写入已提交
         QTimer.singleShot(500, self._refresh_table_after_test)
 
@@ -517,7 +518,7 @@ class MoistureAnalyzer(QMainWindow):
         diff = abs(dry_weight - check_dry)
         status = "✓ 通过" if passed else "✗ 不通过"
         self.progress_data.setText(
-            "恒重检查 样位%d: %s (本次=%.4f 上次=%.4f diff=%.4f)"
+            "<span style='color:#2B579A;font-weight:bold'>测试进度：</span>恒重检查 样位%d: %s (本次=%.4f 上次=%.4f diff=%.4f)"
             % (row_idx + 1, status, dry_weight, check_dry, diff))
 
     def _on_test_weigh_result(self, row_idx, dry_weight, phase):
@@ -1163,12 +1164,16 @@ class MoistureAnalyzer(QMainWindow):
             self.btn_start.setDisabled(True)
             self.btn_start.setText("测试中")
             self.btn_stop.setEnabled(True)
-            self.progress_label.setText("测试进度")
-            self.progress_data.setText("正在初始化测试...")
+            self.progress_widget.setVisible(True)
+            self.progress_data.setText("<span style='color:#2B579A;font-weight:bold'>测试进度：</span>")
             from db import load_params
             params = load_params()
             sample_list = []
             if self._table:
+                # 行0: 1号校正坩埚
+                corr_name_item = self._table.item(0, 0)
+                corr_name = corr_name_item.text().strip() if corr_name_item and corr_name_item.text() else "1号坩埚"
+                sample_list.append((0, corr_name, "", 0.0))
                 for r in range(1, self._table.rowCount()):
                     item_name = self._table.item(r, 0)
                     if item_name and item_name.text().strip():
@@ -1194,8 +1199,7 @@ class MoistureAnalyzer(QMainWindow):
             self.btn_start.setEnabled(True)
             self.btn_start.setText("开始测试")
             self.btn_stop.setEnabled(False)
-            self.progress_label.setText("")
-            self.progress_data.setText("测试已停止")
+            self.progress_widget.setVisible(False)
             return
 
         if name == "打印数据":

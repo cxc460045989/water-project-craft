@@ -134,6 +134,7 @@ class WeighWorker(QThread):
     # ===== 批量称坩埚 =====
     def _batch_tare(self):
         _log("批量坩埚称量开始, 共 " + str(len(self._valid_rows)) + " 个")
+        self._send_cmd(CMD.RESET, desc="仪器复位")
         self._send_long_duration_cmd(CMD.CLOSE_LID, desc="正在关闭炉盖")
 
         # 先发送坩埚校正值到仪器
@@ -205,6 +206,7 @@ class WeighWorker(QThread):
     # ===== 单个称样品 =====
     def _single_sample(self):
         _log("单个称量样品开始, 共 " + str(len(self._valid_rows)) + " 个")
+        self._send_cmd(CMD.RESET, desc="仪器复位")
         self.sig_status_msg.emit("正在进入称重模式...")
         self._send_cmd(CMD.ENTER_WEIGH_MODE, desc="进入称量样重状态")
         self._sleep(CMD_INTERVAL_S)
@@ -284,6 +286,7 @@ class WeighWorker(QThread):
         individual_rows = [(r, n, m) for r, n, m in self._valid_rows if r > 0]
         _log("单独称量样品开始, 有效样品 " + str(len(individual_rows)) + " 个")
 
+        self._send_cmd(CMD.RESET, desc="仪器复位")
         self._send_cmd(CMD.ENTER_WEIGH_MODE, desc="进入称量样重状态")
         self._sleep(CMD_INTERVAL_S)
 
@@ -361,6 +364,7 @@ class WeighWorker(QThread):
     def _reweigh_tare(self):
         """重新称量-准备阶段: 只做机械动作和发送校正值，不称任何坩埚"""
         _log("重新称量准备阶段")
+        self._send_cmd(CMD.RESET, desc="仪器复位")
         self._send_long_duration_cmd(CMD.CLOSE_LID, desc="正在关闭炉盖")
         corr_w = self._get_crucible_correction_weight()
         if corr_w > 0:
@@ -922,9 +926,10 @@ class WeighController(QObject):
         if not db_key:
             return
         if phase == "sample":
-            tare_w = extra.get("tare_weight")
             kwargs = {"sample_weight": weight}
-            if tare_w is not None:
+            tare_w = extra.get("tare_weight")
+            # 仅在坩埚重有效(>0)时同步写入, 避免用0覆盖已保存的正确值
+            if tare_w and tare_w > 0:
                 kwargs["tare_weight"] = tare_w
             upsert_experiment_sample(eid, row, **kwargs)
         else:

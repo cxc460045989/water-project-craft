@@ -197,6 +197,9 @@ class MockInstrumentSimulator:
         elif fc == CMD.CALIBRATE:
             pass  # 模拟校准
         elif fc == CMD.CLOSE_LID:
+            # 炉盖本就关闭(未经过OPEN_LID) → 新一轮称重, 重置样品阶段
+            if not self._lid_open:
+                self._in_sample_phase = False
             self._lid_open = False
         elif fc == CMD.OPEN_LID:
             self._lid_open = True
@@ -231,6 +234,8 @@ class MockInstrumentSimulator:
             self._target_temp = 0
             self._fan_on = False
             self._n2_on = False
+            self._in_sample_phase = False
+            self._lid_open = False
         elif fc in (CMD.MOISTURE_TEST_1, CMD.MOISTURE_TEST_2):
             self._moisture_testing = True
             self._weigh_mode = False
