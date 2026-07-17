@@ -587,6 +587,7 @@ class TestWorker(QObject):
         self._safe_send_cmd(CMD.FAN_OFF, "关鼓风")
         self._safe_send_cmd(CMD.N2_OFF, "关氮气")
         self._safe_send_cmd(CMD.GAS_ALL_OFF, "关闭全部气体")
+        self._safe_send_cmd(CMD.RESET, "仪器复位")
 
         self.sig_status_msg.emit("测试完成")
         self.sig_test_done.emit()
@@ -1012,20 +1013,20 @@ class TestWorker(QObject):
     # ========= 串口工具方法 =========
 
     def _send_cmd_with_uplink_check(self, cmd_bytes, desc, callback=None):
-        """检测上行活跃后发指令(统一入口, 去握手)"""
+        """检测上行活跃后发指令(统一入口, 去握手)
+        传入 temp_callback, 确保指令发送过程中消费的上行帧温度实时更新到UI
+        """
         if not self._running:
             return
         from protocol_layer import send_cmd_with_uplink_check
         ok = send_cmd_with_uplink_check(
             self._serial, cmd_bytes, desc,
+            temp_callback=lambda t: (setattr(self, '_current_temp', t), self.sig_temp_update.emit(t)),
         )
         if not ok:
             self.sig_error.emit("指令发送失败: " + desc)
             return
         _log("指令已发送: %s" % desc)
-        # 指令发送过程中 send_cmd_with_uplink_check 内部会消耗上行帧,
-        # 补读一帧确保温度/重量实时更新到UI
-        self._drain_uplink_for_ui()
         if callback:
             QTimer.singleShot(int(CMD_INTERVAL_S * 1000), callback)
 

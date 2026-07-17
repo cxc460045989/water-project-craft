@@ -236,31 +236,41 @@ class UplinkBuffer:
 # ============================================================
 # send_cmd_with_uplink_check — 统一指令发送（上行检测 → 发指令 → 等返回值）
 # ============================================================
-def send_cmd_with_uplink_check(serial_mgr, cmd_bytes, desc=""):
+def send_cmd_with_uplink_check(serial_mgr, cmd_bytes, desc="", temp_callback=None):
     """发指令 → 等仪器即时响应（上行帧），200ms 超时重试，无限重试直到成功
 
     流程:
-        1. 发送指令到串口
-        2. 等待仪器即时返回上行帧（指令响应，非周期心跳）
-        3. 200ms 内拿到上行帧 → 成功
-        4. 超时 → 回到步骤 1 重试（无上限）
+        1. 一次性排空串口旧数据（转发温度到回调）
+        2. 发送指令 → 等待响应帧（200ms 超时）
+        3. 超时则重新发送（不再排空，避免吃掉仪器的周期帧导致永远等不到响应）
 
     参数:
         serial_mgr: SerialManager 实例
         cmd_bytes: 要发送的指令字节
         desc: 指令描述（用于日志）
+        temp_callback: 可选, callable(temperature_float) — 每收到一帧上行数据时回调,
+                       用于将消费帧的温度实时转发到 UI, 避免数据丢失
     """
     import time as _time
 
     RESP_TIMEOUT = 0.2  # 200ms
     first_attempt = True
 
+    # ===== 一次性排空旧数据（仅一次，不在重试循环中重复）=====
+    try:
+        stale = serial_mgr.read_all()
+    except Exception:
+        stale = b""
+    if stale and temp_callback:
+        buf = UplinkBuffer()
+        for f in buf.feed(stale):
+            try:
+                temp_callback(f["temperature"])
+            except Exception:
+                pass
+
     while True:
-        # ===== 步骤1: 发送指令 =====
-        try:
-            serial_mgr.flush_input()
-        except Exception:
-            pass
+        # ===== 发送指令 =====
         n = serial_mgr.send(cmd_bytes)
         if n == 0:
             if first_attempt:
@@ -272,7 +282,7 @@ def send_cmd_with_uplink_check(serial_mgr, cmd_bytes, desc=""):
             logger.info("[CMD] 已发送: %s | %s" % (desc, cmd_bytes.hex()))
             first_attempt = False
 
-        # ===== 步骤2: 等待仪器即时响应（上行帧）=====
+        # ===== 等待仪器响应（上行帧）=====
         resp_start = _time.time()
         resp_received = False
         while (_time.time() - resp_start) < RESP_TIMEOUT:
@@ -285,6 +295,13 @@ def send_cmd_with_uplink_check(serial_mgr, cmd_bytes, desc=""):
                 frames = buf.feed(raw)
                 if frames:
                     serial_mgr.update_uplink_time()
+                    # 转发温度数据到回调, 避免消费帧后温度被丢弃
+                    if temp_callback:
+                        for f in frames:
+                            try:
+                                temp_callback(f["temperature"])
+                            except Exception:
+                                pass
                     resp_received = True
                     break
             _time.sleep(0.05)
@@ -293,7 +310,7 @@ def send_cmd_with_uplink_check(serial_mgr, cmd_bytes, desc=""):
             logger.info("[CMD] 发送成功，收到响应: %s" % desc)
             return True
 
-        # 200ms 内无响应，重试（不打印日志避免刷屏）
+        # 200ms 内无响应，重新发送（不排空，不打印日志避免刷屏）
 
 
 # ============================================================

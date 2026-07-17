@@ -230,12 +230,7 @@ class MockInstrumentSimulator:
             self._position = 1
             self._plate_pos = 1
         elif fc == CMD.RESET:
-            self._heater_on = False
-            self._target_temp = 0
-            self._fan_on = False
-            self._n2_on = False
-            self._in_sample_phase = False
-            self._lid_open = False
+            print("[MOCK] 收到复位指令 (RESET 0x20)")
         elif fc in (CMD.MOISTURE_TEST_1, CMD.MOISTURE_TEST_2):
             self._moisture_testing = True
             self._weigh_mode = False

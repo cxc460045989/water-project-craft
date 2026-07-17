@@ -778,7 +778,7 @@ class MoistureAnalyzer(QMainWindow):
         temp_row = QHBoxLayout()
         temp_row.setSpacing(6)
         tl = QLabel("炉膛温度："); tl.setStyleSheet("font-size: 14px; font-weight: bold; color: #2B579A; background: transparent;")
-        tv = QLabel("000"); tv.setObjectName("topTempVal"); tv.setStyleSheet("color: #00FF00; font-size: 24px; font-weight: bold; background: #000000; border: 1px solid #FFD600; border-radius: 4px; padding: 2px 8px; font-family: Courier New, Consolas, monospace;")
+        tv = QLabel("000"); tv.setObjectName("topTempVal"); tv.setStyleSheet("color: #00FF00; font-size: 24px; font-weight: bold; background: #000000; border: 1px solid #FFD600; border-radius: 4px; padding: 4px 8px 5px 8px; font-family: Courier New, Consolas, monospace;")
         self.temp_val = tv
         tv.setAlignment(Qt.AlignCenter)
         temp_row.addWidget(tl); temp_row.addWidget(tv); lbl_unit = QLabel(" ℃ "); lbl_unit.setStyleSheet("background: transparent;"); temp_row.addWidget(lbl_unit); temp_row.addStretch()
@@ -1339,6 +1339,15 @@ class MoistureAnalyzer(QMainWindow):
                     from db import create_experiment, save_experiment_samples
 
                     sample_list = []
+                    # 第0行: 校正坩埚（必须包含，否则重启后丢失）
+                    corr_name_item = self._table.item(0, 0)
+                    corr_name = corr_name_item.text().strip() if corr_name_item and corr_name_item.text() else "校正坩埚"
+                    corr_tare_item = self._table.item(0, 2)
+                    corr_tare = float(corr_tare_item.text()) if corr_tare_item and corr_tare_item.text() else 0.0
+                    corr_sample_item = self._table.item(0, 3)
+                    corr_sample = float(corr_sample_item.text()) if corr_sample_item and corr_sample_item.text() else 0.0
+                    if corr_tare > 0:
+                        sample_list.append({"row": 0, "name": corr_name, "weight": corr_sample, "tare": corr_tare, "mode": ""})
                     for r in range(1, self._table.rowCount()):
                         name_item = self._table.item(r, 0)
                         if name_item and name_item.text().strip():
@@ -1366,6 +1375,8 @@ class MoistureAnalyzer(QMainWindow):
                         aw_high = float(params.get("aw_high", 1.1))
                         failed_samples = []
                         for s in sample_list:
+                            if s.get("row") == 0:
+                                continue  # 跳过校正坩埚
                             lo, hi = (tw_low, tw_high) if s.get("mode") == "全水" else (aw_low, aw_high)
                             if s["weight"] < lo or s["weight"] > hi:
                                 failed_samples.append(s)
