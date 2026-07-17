@@ -544,29 +544,57 @@ def save_experiment_result(实验ID, 批次号, 试验日期, 坩埚位号,
 
 
 def save_experiment_results_batch(results_list):
-    """批量写入最终实验结果
-    results_list: list of dict, 每个 dict 对应一行
-    """
+    """批量写入最终实验结果 — 键号=(实验ID, 坩埚位号)唯一, 重复则覆盖"""
     if not results_list:
         return
     conn = get_conn()
     for r in results_list:
-        conn.execute("""
-            INSERT INTO experiment_results
-                (实验ID, 批次号, 试验日期, 坩埚位号, 样品名, 模式,
-                 坩埚重, 样重, 检查性干燥重, 干燥后重,
-                 水分, 平均水分, 精密度,
-                 分析水温度, 分析水时间, 全水温度, 全水时间, 测试单位, 化验员)
-            VALUES (?,?,?,?,?,?, ?,?,?,?, ?,?,?, ?,?,?,?, ?,?)
-        """, (
-            r.get("实验ID"), r.get("批次号"), r.get("试验日期"),
-            r.get("坩埚位号"), r.get("样品名"), r.get("模式"),
-            r.get("坩埚重"), r.get("样重"),
-            r.get("检查性干燥重"), r.get("干燥后重"),
-            r.get("水分"), r.get("平均水分"), r.get("精密度"),
-            r.get("分析水温度"), r.get("分析水时间"), r.get("全水温度"), r.get("全水时间"),
-            r.get("测试单位"), r.get("化验员"),
-        ))
+        eid = r.get("实验ID")
+        pos = r.get("坩埚位号")
+        # 检查是否已存在同键号记录
+        existing = conn.execute(
+            "SELECT id FROM experiment_results WHERE 实验ID=? AND 坩埚位号=?",
+            (eid, pos)
+        ).fetchone()
+        if existing:
+            # 覆盖已有记录
+            conn.execute("""
+                UPDATE experiment_results SET
+                    批次号=?, 试验日期=?, 样品名=?, 模式=?,
+                    坩埚重=?, 样重=?, 检查性干燥重=?, 干燥后重=?,
+                    水分=?, 平均水分=?, 精密度=?,
+                    分析水温度=?, 分析水时间=?, 全水温度=?, 全水时间=?,
+                    测试单位=?, 化验员=?
+                WHERE id=?
+            """, (
+                r.get("批次号"), r.get("试验日期"),
+                r.get("样品名"), r.get("模式"),
+                r.get("坩埚重"), r.get("样重"),
+                r.get("检查性干燥重"), r.get("干燥后重"),
+                r.get("水分"), r.get("平均水分"), r.get("精密度"),
+                r.get("分析水温度"), r.get("分析水时间"),
+                r.get("全水温度"), r.get("全水时间"),
+                r.get("测试单位"), r.get("化验员"),
+                existing[0],
+            ))
+        else:
+            conn.execute("""
+                INSERT INTO experiment_results
+                    (实验ID, 批次号, 试验日期, 坩埚位号, 样品名, 模式,
+                     坩埚重, 样重, 检查性干燥重, 干燥后重,
+                     水分, 平均水分, 精密度,
+                     分析水温度, 分析水时间, 全水温度, 全水时间, 测试单位, 化验员)
+                VALUES (?,?,?,?,?,?, ?,?,?,?, ?,?,?, ?,?,?,?, ?,?)
+            """, (
+                eid, r.get("批次号"), r.get("试验日期"),
+                pos, r.get("样品名"), r.get("模式"),
+                r.get("坩埚重"), r.get("样重"),
+                r.get("检查性干燥重"), r.get("干燥后重"),
+                r.get("水分"), r.get("平均水分"), r.get("精密度"),
+                r.get("分析水温度"), r.get("分析水时间"),
+                r.get("全水温度"), r.get("全水时间"),
+                r.get("测试单位"), r.get("化验员"),
+            ))
     conn.commit()
     conn.close()
 

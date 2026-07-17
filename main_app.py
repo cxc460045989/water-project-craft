@@ -4,7 +4,7 @@
 依赖: pip install pyside2 pyserial
 """
 
-import sys, os, subprocess
+import sys, os
 from PySide2.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QTableWidget, QTableWidgetItem, QComboBox, QLabel,
@@ -12,11 +12,9 @@ from PySide2.QtWidgets import (
     QMessageBox,
 )
 from PySide2.QtCore import Qt, QSize, QEvent, QTimer, QItemSelectionModel
-from PySide2.QtGui import QFont, QKeySequence
+from PySide2.QtGui import QFont
 from db import load_params, save_params, load_techs
 from button_styles import BUTTON_QSS, apply_button_types
-from PySide2.QtWidgets import QShortcut
-from PySide2.QtGui import QFont
 from serial_comm import SerialManager
 from logging_util import logger
 from protocol_layer import FrameParser, UplinkBuffer, CommandBuilder, CMD, handshake
@@ -384,12 +382,12 @@ class MoistureAnalyzer(QMainWindow):
         self._build_content(lo)
         # ---- 底部信息栏（默认隐藏） ----
         self.progress_label = QLabel("")
-        self.progress_label.setStyleSheet("font-size: 14px; font-weight: bold; color: #2B579A; padding: 0 8px;")
+        self.progress_label.setStyleSheet("font-size: 22px; font-weight: bold; color: #2B579A; padding: 0 8px;")
         self.progress_data = QLabel("")
-        self.progress_data.setStyleSheet("font-size: 13px; color: #1F2937; padding: 0 8px;")
+        self.progress_data.setStyleSheet("font-size: 22px; color: #1F2937; padding: 0 8px;")
         info_bar = QWidget()
         info_bar.setObjectName("bottomInfoBar")
-        info_bar.setFixedHeight(36)
+        info_bar.setFixedHeight(52)
         info_lo = QHBoxLayout(info_bar)
         info_lo.setContentsMargins(16,0,16,0)
         info_lo.setSpacing(8)
@@ -425,15 +423,6 @@ class MoistureAnalyzer(QMainWindow):
                 self._uplink_poll_timer.start(200)
         else:
             logger.info("[SERIAL] 未配置串口号，启动后不自动打开")
-        # ---- QShortcut（仅开发模式可用） ----
-        if not getattr(sys, "frozen", False):
-            QShortcut(QKeySequence('F5'), self).activated.connect(self._restart)
-
-    def _restart(self):
-        subprocess.Popen([sys.executable, __file__])
-        self.close()
-        QApplication.instance().quit()
-
     # ---- 串口回调 ----
     def _on_serial_connected(self):
         import datetime
@@ -467,8 +456,6 @@ class MoistureAnalyzer(QMainWindow):
         for f in frames:
             self._frame_count = getattr(self, "_frame_count", 0) + 1
             self.temp_val.setText("%.1f" % f["temperature"])
-            online_str = "联机" if f["online"] else "脱机"
-            self.progress_data.setText("炉温: %.1f\u2103  状态: %s" % (f["temperature"], online_str))
             if f["btn_pressed"]:
                 pass
             if getattr(self, "_print_counter", 0) % 5 == 0:
@@ -482,41 +469,103 @@ class MoistureAnalyzer(QMainWindow):
 
 
     def _init_test_signals(self):
-        """??TestController???UI??"""
+        """连接 TestController 全部信号到 UI"""
         self.test_ctrl.sig_status_msg.connect(self.progress_data.setText)
-        self.test_ctrl.sig_error.connect(lambda m: self.progress_data.setText("??: " + m))
-        self.test_ctrl.sig_temp_update.connect(lambda t: setattr(self, '_test_temp', t))
+        self.test_ctrl.sig_error.connect(lambda m: self.progress_data.setText("错误: " + m))
+        self.test_ctrl.sig_temp_update.connect(self._on_test_temp_update)
         self.test_ctrl.sig_hold_countdown.connect(self._on_hold_countdown)
+        self.test_ctrl.sig_hold_started.connect(self._on_hold_started)
         self.test_ctrl.sig_test_done.connect(self._on_test_done)
+        self.test_ctrl.sig_const_check_result.connect(self._on_const_check_result)
+        self.test_ctrl.sig_phase_changed.connect(
+            lambda p: self.progress_label.setText(p))
+        self.test_ctrl.sig_weigh_result.connect(self._on_test_weigh_result)
+        self.test_ctrl.sig_initial_weight.connect(self._on_initial_weight)
+
+    def _on_test_temp_update(self, temp):
+        """测试期间温度实时更新到界面"""
+        self.temp_val.setText("%.1f" % temp)
 
     def _on_hold_countdown(self, remaining):
         mins = remaining // 60
         secs = remaining % 60
         self.progress_data.setText("恒温倒计时: %02d:%02d" % (mins, secs))
 
+    def _on_hold_started(self, total):
+        """恒温保持启动: 显示总倒计时"""
+        mins = total // 60
+        secs = total % 60
+        self.progress_data.setText("恒温保持 %02d:%02d" % (mins, secs))
+
     def _on_test_done(self):
         self.btn_start.setEnabled(True)
         self.btn_start.setText("开始测试")
+        self.btn_stop.setEnabled(False)
         self.progress_label.setText("")
         self.progress_data.setText("测试完成")
+        # 延迟刷新表格, 确保 _finalize_experiment 的 DB 写入已提交
+        QTimer.singleShot(500, self._refresh_table_after_test)
+
+    def _refresh_table_after_test(self):
+        """测试完成后刷新表格, 加载水分/平均值/精密度"""
+        if self._table:
+            self._restore_samples_from_db(self._table)
+            logger.info("[TEST] 测试完成, 表格已刷新")
+
+    def _on_const_check_result(self, row_idx, passed, dry_weight, check_dry):
+        """恒重检查结果回调"""
+        diff = abs(dry_weight - check_dry)
+        status = "✓ 通过" if passed else "✗ 不通过"
+        self.progress_data.setText(
+            "恒重检查 样位%d: %s (本次=%.4f 上次=%.4f diff=%.4f)"
+            % (row_idx + 1, status, dry_weight, check_dry, diff))
+
+    def _on_test_weigh_result(self, row_idx, dry_weight, phase):
+        """测试称重结果实时回填表格: 检查性→col4, 干燥→col5"""
+        if not self._table or row_idx >= self._table.rowCount():
+            return
+        # 根据阶段判断写入列: 检查性干燥重量(col4) 或 干燥重量(col5)
+        if "检查性" in phase or phase == "dry_aw" or phase == "dry_tw":
+            # 首次称重写 col4
+            col = 4
+        else:
+            col = 5
+        item = self._table.item(row_idx, col)
+        from PySide2.QtWidgets import QTableWidgetItem
+        from PySide2.QtCore import Qt
+        if item is None:
+            item = QTableWidgetItem()
+            item.setTextAlignment(Qt.AlignCenter)
+            item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+            self._table.setItem(row_idx, col, item)
+        item.setText("{:.4f}".format(dry_weight))
+        logger.info("[TEST] 表格回填 row=%d col=%d weight=%.4f" % (row_idx, col, dry_weight))
+
+    def _on_initial_weight(self, row_idx, col, value):
+        """复检称重实时回填表格: col2=坩埚重, col3=样重"""
+        if not self._table or row_idx >= self._table.rowCount():
+            return
+        item = self._table.item(row_idx, col)
+        from PySide2.QtWidgets import QTableWidgetItem
+        from PySide2.QtCore import Qt
+        if item is None:
+            item = QTableWidgetItem()
+            item.setTextAlignment(Qt.AlignCenter)
+            item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+            self._table.setItem(row_idx, col, item)
+        item.setText("{:.4f}".format(value))
+        logger.info("[TEST] 复检回填 row=%d col=%d value=%.4f" % (row_idx, col, value))
 
     def _on_append_finished(self, success, msg):
         """追加样品完成回调"""
         self.btn_append.setEnabled(True)
-        self.progress_label.setText("")
         if self._table:
             self._restore_samples_from_db(self._table)
-        if success:
-            self.progress_data.setText("追加样品完成")
-        else:
-            self.progress_data.setText("追加失败: " + msg)
         self._append_worker = None
 
     def _on_append_error(self, msg):
         """追加样品错误回调"""
         self.btn_append.setEnabled(True)
-        self.progress_label.setText("")
-        self.progress_data.setText("错误: " + msg)
         self._append_worker = None
 
 
@@ -565,13 +614,10 @@ class MoistureAnalyzer(QMainWindow):
 
     def _rebuild_table(self):
         """关闭试验参数后刷新表格行数"""
-        self.progress_data.setText("正在更新表格...")
-        QApplication.processEvents()
         sc = load_params().get("sample_count", 24) or 24
         self._table.setRowCount(int(sc))
         self._fill_table(self._table)
         self._restore_samples_from_db(self._table)
-        self.progress_data.setText("")
 
     def _save_hy_current(self, text):
         """保存当前选中的化验员到 SQLite"""
@@ -704,7 +750,9 @@ class MoistureAnalyzer(QMainWindow):
             btn = StartButton(n) if n == "开始测试" else StopButton(n)
             btn.clicked.connect(lambda checked=False, x=n: self._on_click(x))
             if n == "开始测试": self.btn_start = btn
-            elif n == "停止测试": self.btn_stop = btn
+            elif n == "停止测试":
+                self.btn_stop = btn
+                self.btn_stop.setEnabled(False)  # 初始无测试, 停止按钮不可用
             pl.addWidget(btn); pl.addSpacing(10)
         dv1 = QFrame(); dv1.setObjectName("divider"); dv1.setFrameShape(QFrame.HLine)
         pl.addSpacing(2); pl.addWidget(dv1); pl.addSpacing(14)
@@ -1000,37 +1048,43 @@ class MoistureAnalyzer(QMainWindow):
                         t.setItem(r, 5, i5)
                 mst = row.get("moisture")
                 if mst is not None:
+                    mode = row.get("mode", "") or ""
+                    fmt = "{:.1f}" if mode == "全水" else "{:.2f}"
                     item6 = t.item(r, 6)
                     if item6 is not None:
-                        item6.setText("{:.2f}".format(mst))
+                        item6.setText(fmt.format(mst))
                     else:
                         from PySide2.QtWidgets import QTableWidgetItem
                         from PySide2.QtCore import Qt
-                        i6 = QTableWidgetItem("{:.2f}".format(mst))
+                        i6 = QTableWidgetItem(fmt.format(mst))
                         i6.setTextAlignment(Qt.AlignCenter)
                         i6.setFlags(i6.flags() & ~Qt.ItemIsEditable)
                         t.setItem(r, 6, i6)
                 avg = row.get("avg_moisture")
                 if avg is not None:
+                    mode = row.get("mode", "") or ""
+                    fmt = "{:.1f}" if mode == "全水" else "{:.2f}"
                     item7 = t.item(r, 7)
                     if item7 is not None:
-                        item7.setText("{:.2f}".format(avg))
+                        item7.setText(fmt.format(avg))
                     else:
                         from PySide2.QtWidgets import QTableWidgetItem
                         from PySide2.QtCore import Qt
-                        i7 = QTableWidgetItem("{:.2f}".format(avg))
+                        i7 = QTableWidgetItem(fmt.format(avg))
                         i7.setTextAlignment(Qt.AlignCenter)
                         i7.setFlags(i7.flags() & ~Qt.ItemIsEditable)
                         t.setItem(r, 7, i7)
                 prec = row.get("precision_val")
                 if prec is not None:
+                    mode = row.get("mode", "") or ""
+                    fmt = "{:.1f}" if mode == "全水" else "{:.2f}"
                     item8 = t.item(r, 8)
                     if item8 is not None:
-                        item8.setText("{:.2f}".format(prec))
+                        item8.setText(fmt.format(prec))
                     else:
                         from PySide2.QtWidgets import QTableWidgetItem
                         from PySide2.QtCore import Qt
-                        i8 = QTableWidgetItem("{:.2f}".format(prec))
+                        i8 = QTableWidgetItem(fmt.format(prec))
                         i8.setTextAlignment(Qt.AlignCenter)
                         i8.setFlags(i8.flags() & ~Qt.ItemIsEditable)
                         t.setItem(r, 8, i8)
@@ -1108,6 +1162,7 @@ class MoistureAnalyzer(QMainWindow):
         if name == "开始测试":
             self.btn_start.setDisabled(True)
             self.btn_start.setText("测试中")
+            self.btn_stop.setEnabled(True)
             self.progress_label.setText("测试进度")
             self.progress_data.setText("正在初始化测试...")
             from db import load_params
@@ -1138,6 +1193,7 @@ class MoistureAnalyzer(QMainWindow):
             self.test_ctrl.stop_test()
             self.btn_start.setEnabled(True)
             self.btn_start.setText("开始测试")
+            self.btn_stop.setEnabled(False)
             self.progress_label.setText("")
             self.progress_data.setText("测试已停止")
             return
@@ -1373,8 +1429,6 @@ class MoistureAnalyzer(QMainWindow):
 
             # ---- 4. 禁用按钮，创建共用弹窗 ----
             self.btn_append.setEnabled(False)
-            self.progress_label.setText("追加样品")
-            self.progress_data.setText("启动追加样品流程...")
             dlg = WeighDialog(self)
             dlg.enable_cancel(True)
 
@@ -1387,7 +1441,6 @@ class MoistureAnalyzer(QMainWindow):
 
             def on_phase1_status(msg):
                 dlg.show_status(msg)
-                self.progress_data.setText(msg)
 
             def on_phase1_progress(info):
                 if info["phase"] == "tare":
@@ -1442,14 +1495,12 @@ class MoistureAnalyzer(QMainWindow):
 
                 def on_real_time(weight):
                     dlg.update_real_time_weight(weight)
-                    self.progress_data.setText("样品重: %.4fg" % weight)
 
                 def on_single_done(row, weight):
-                    self.progress_data.setText("%d号样品重: %.4fg" % (row + 1, weight))
+                    pass
 
                 def on_range_warning(name, weight, lo, hi):
                     dlg.show_individual_range_warning(lo, hi)
-                    self.progress_data.setText("重量超限 %.4fg (%.4f-%.4f)" % (weight, lo, hi))
 
                 ctrl.sig_weighing_progress.connect(on_progress)
                 ctrl.sig_weighing_done.connect(on_done)

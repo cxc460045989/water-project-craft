@@ -153,10 +153,15 @@ class AppendSampleWorker(QThread):
         if f is not None:
             self._serial.update_uplink_time()
             raw_str = f.get("raw_str", "?")
-            if not hasattr(self, "_last_uplink_raw") or self._last_uplink_raw != raw_str:
+            # 数值变化立即打印; 不变时按 1s 节流打印(与正式模式日志密度一致)
+            changed = not hasattr(self, "_last_uplink_raw") or self._last_uplink_raw != raw_str
+            throttled = (not changed and
+                         getattr(self, "_last_uplink_log_time", 0) + 1.0 < time.time())
+            if changed or throttled:
                 _log("上行帧: raw=%s 重量=%.4fg 温度=%.1fC 联机=%s 按键=%s" %
                      (raw_str, f["weight"], f["temperature"], f["online"], f["btn_pressed"]))
                 self._last_uplink_raw = raw_str
+                self._last_uplink_log_time = time.time()
         return f["weight"], True
 
     # ================================================================

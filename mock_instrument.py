@@ -22,7 +22,7 @@ class MockInstrumentSimulator:
         self._weight = 0.0
         self._online = 0
         self._btn = 0
-        self._interval_ms = 1000
+        self._interval_ms = 200
 
         # 仪器状态
         self._tare_offset = 0.0
@@ -44,17 +44,19 @@ class MockInstrumentSimulator:
 
         # 上行帧缓存（供 SimSerialAdapter 读取）
         self._uplink_buf = bytearray()
+        self._uplink_lock = threading.Lock()  # 保护 _uplink_buf 读写
         self._resp_buf = bytearray()
 
         # 后台线程
         self._running = False
         self._thread = None
 
-        # 模拟升温速率 (℃/s) — 加速模式: 50°C/s
+        # 模拟升温速率 (℃/s): 每500ms升高5℃, 即10℃/s
+        # 方便测试「温度打到设定温度-5℃时进入恒温」逻辑
         import os as _os
         _speed = _os.environ.get('WATER_SPEED_MODE', '0') == '1'
-        self._heat_rate = 50.0 if _speed else 20.0
-        self._cool_rate = 5.0 if _speed else 2.0
+        self._heat_rate = 10.0
+        self._cool_rate = 3.0
 
     # ===== 生命周期 =====
 
@@ -79,6 +81,7 @@ class MockInstrumentSimulator:
         if not self._running:
             return
         # 控温逻辑
+        prev_temp = self._temp
         if self._heater_on and self._target_temp > 0:
             diff = self._target_temp - self._temp
             if diff > 2.0:
@@ -88,19 +91,55 @@ class MockInstrumentSimulator:
             elif abs(diff) > 0.1:
                 self._temp += 2.0 * (self._interval_ms / 1000.0) if diff > 0 else -0.5 * (self._interval_ms / 1000.0)
             self._temp = min(self._temp, self._target_temp + 0.5)
+            # 温度里程碑日志: 接近目标温度时打印
+            threshold = self._target_temp - 5
+            if prev_temp < threshold <= self._temp:
+                print("[MOCK] 温度达标! %.1f°C >= %d°C (目标%d°C-5), 可进入恒温" % (
+                    self._temp, threshold, self._target_temp))
+            elif int(prev_temp / 10) != int(self._temp / 10) and self._temp < self._target_temp:
+                print("[MOCK] 加热中: %.1f°C → 目标 %d°C" % (self._temp, self._target_temp))
         elif not self._heater_on and self._temp > 25.0:
             self._temp -= self._cool_rate * (self._interval_ms / 1000.0)
             self._temp = max(self._temp, 25.0)
 
+        # 根据当前状态自动计算模拟重量（模拟真实仪器持续输出重量读数）
+        self._weight = self._compute_weight()
+
         # 组装上行帧
         raw_temp = int(round(self._temp * 10))
-        raw_weight = int(round((self._weight + self._tare_offset) * 10000)) + 3000000
+        raw_weight = int(round(self._weight * 10000)) + 3000000
         raw_temp = max(0, min(9999, raw_temp))
         raw_weight = max(0, min(9999999, raw_weight))
         frame = "S%04d%07d%d%dEND" % (raw_temp, raw_weight, self._online, self._btn)
-        self._uplink_buf.extend(frame.encode("ascii"))
+        with self._uplink_lock:
+            self._uplink_buf.extend(frame.encode("ascii"))
         # 复位按键
         self._btn = 0
+
+    def _get_physical_weight(self):
+        """计算当前物理重量（不含去皮偏移）
+
+        样盘上位: 天平空载, physical = 0
+        样盘下位: 坩埚(和样品)压在天平上, physical = 实际值
+        """
+        if self._plate_pos == 1:
+            return 0.0
+        pos = self._position
+        if pos not in self._crucible_weights:
+            self._crucible_weights[pos] = round(18.5 + pos * 0.25, 4)
+        physical = self._crucible_weights[pos]
+        if self._in_sample_phase:
+            if pos not in self._sample_weights:
+                if pos <= 6:
+                    self._sample_weights[pos] = round(0.95 + pos * 0.01, 4)
+                else:
+                    self._sample_weights[pos] = round(9.50 + (pos - 6) * 0.12, 4)
+            physical += self._sample_weights[pos]
+        return physical
+
+    def _compute_weight(self):
+        """天平读数 = 物理重量 + 去皮偏移"""
+        return self._get_physical_weight() + self._tare_offset
 
     # ===== 下行指令处理 =====
 
@@ -146,39 +185,15 @@ class MockInstrumentSimulator:
             self._beeper_on = False
         elif fc == CMD.SAMPLE_PLATE_UP:
             self._plate_pos = 1
-            self._weight = 0.0
-            self._tare_offset = 0.0
             # 水分测试进行中不清除样品阶段标记，保证后续称重返回样品重量
             if not self._moisture_testing:
                 self._in_sample_phase = False
         elif fc == CMD.SAMPLE_PLATE_DOWN:
             self._plate_pos = 0
-            # 获取当前样位的坩埚重量(按样位确定，保证每次一致)
-            if self._position not in self._crucible_weights:
-                self._crucible_weights[self._position] = round(18.5 + self._position * 0.25, 4)
-            base = self._crucible_weights[self._position]
-            # 样品称量阶段: 天平读数 = 坩埚 + 样品
-            if self._in_sample_phase:
-                if self._position not in self._sample_weights:
-                    # 模拟不同模式重量: 前6位 ~1g(分析水范围), 后6位 ~10g(全水范围)
-                    if self._position <= 6:
-                        self._sample_weights[self._position] = round(0.95 + self._position * 0.01, 4)
-                    else:
-                        self._sample_weights[self._position] = round(9.50 + (self._position - 6) * 0.12, 4)
-                self._weight = base + self._sample_weights[self._position]
-            else:
-                self._weight = base
         elif fc == CMD.TARE:
-            self._tare_offset = 0.0
-            self._weight = 0.0
-            # 样品称量阶段: 去皮后模拟样品净重（无需等 SAMPLE_PLATE_DOWN）
-            if self._in_sample_phase:
-                if self._position not in self._sample_weights:
-                    if self._position <= 6:
-                        self._sample_weights[self._position] = round(0.95 + self._position * 0.01, 4)
-                    else:
-                        self._sample_weights[self._position] = round(9.50 + (self._position - 6) * 0.12, 4)
-                self._weight = self._sample_weights[self._position]
+            # 去皮: 将当前物理重量归零, 直接设置偏移量
+            # 不累加, 避免 plate 位置不一致时偏移量漂移
+            self._tare_offset = -self._get_physical_weight()
         elif fc == CMD.CALIBRATE:
             pass  # 模拟校准
         elif fc == CMD.CLOSE_LID:
@@ -207,8 +222,10 @@ class MockInstrumentSimulator:
             self._heater_on = False
         elif fc == CMD.SAMPLE_PLATE_STEP:
             self._position = (self._position % 24) + 1
+            self._plate_pos = 1  # 真实硬件旋转前先抬升样盘
         elif fc == CMD.SAMPLE_PLATE_HOME:
             self._position = 1
+            self._plate_pos = 1
         elif fc == CMD.RESET:
             self._heater_on = False
             self._target_temp = 0
@@ -218,10 +235,16 @@ class MockInstrumentSimulator:
             self._moisture_testing = True
             self._weigh_mode = False
             self._in_sample_phase = True  # 启动测试后后续称重均返回样品重量
+            mode_name = "鼓风" if fc == CMD.MOISTURE_TEST_1 else "氮气"
+            print("[MOCK] 收到开始测试指令(%s), 进入水分测试模式" % mode_name)
+        elif fc == CMD.HEAT_OFF:
+            self._heater_on = False
+            print("[MOCK] 加热关闭, 当前温度=%.1f°C" % self._temp)
         elif 0x35 <= fc <= 0x9C:  # move_to
             pos = fc - 0x34
             if 1 <= pos <= 99:
                 self._position = pos
+                self._plate_pos = 1  # 真实硬件移动前先抬升样盘
         return b""
 
     def _handle_temp_control(self, data):
@@ -229,6 +252,8 @@ class MockInstrumentSimulator:
             digits = [data[2], data[3], data[4], data[5]]
             self._target_temp = digits[0] * 1000 + digits[1] * 100 + digits[2] * 10 + digits[3]
             self._heater_on = True
+            print("[MOCK] 收到控温指令: 目标=%d°C, 当前=%.1f°C, 开始加热" % (
+                self._target_temp, self._temp))
 
     # ===== 手动控制接口（测试用） =====
 
@@ -357,7 +382,7 @@ class SimSerialAdapter:
 
     def _drain_uplink(self):
         """将模拟器上行缓存转移到读缓存(线程安全)"""
-        with self._lock:
+        with self._sim._uplink_lock:
             up = bytes(self._sim._uplink_buf)
             self._sim._uplink_buf.clear()
             if up:

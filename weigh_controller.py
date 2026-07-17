@@ -712,11 +712,16 @@ class WeighWorker(QThread):
             self._serial.update_uplink_time()
             self._last_btn_pressed = bool(f.get("btn_pressed", 0))
             raw_str = f.get("raw_str", "?")
-            if not hasattr(self, "_last_uplink_raw") or self._last_uplink_raw != raw_str:
+            # 数值变化立即打印; 不变时按 1s 节流打印(与正式模式日志密度一致)
+            changed = not hasattr(self, "_last_uplink_raw") or self._last_uplink_raw != raw_str
+            throttled = (not changed and
+                         getattr(self, "_last_uplink_log_time", 0) + 1.0 < time.time())
+            if changed or throttled:
                 _log("上行帧: raw=" + raw_str +
                      " 重量={:.4f}g 温度={:.1f}C 联机={} 按键={}".format(
                      f["weight"], f["temperature"], f["online"], f["btn_pressed"]))
                 self._last_uplink_raw = raw_str
+                self._last_uplink_log_time = time.time()
         return f["weight"], True
 
     def _get_tare_weight(self, row):
