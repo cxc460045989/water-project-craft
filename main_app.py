@@ -779,7 +779,7 @@ class MoistureAnalyzer(QMainWindow):
         # 退出程序
         exit_btn = QPushButton("退出程序")
         apply_button_types(exit_btn, "danger")
-        exit_btn.clicked.connect(self.close)
+        exit_btn.clicked.connect(self._on_exit_clicked)
         pl.addWidget(exit_btn)
         pl.addStretch()
 
@@ -1141,6 +1141,28 @@ class MoistureAnalyzer(QMainWindow):
                 return True
         return super().eventFilter(obj, event)
 
+    def _on_exit_clicked(self):
+        """退出程序 - 带确认提示"""
+        from confirm_dialog import ConfirmDialog
+        # 检查是否有测试在运行
+        warning = "确定要退出程序吗？"
+        if hasattr(self, 'test_ctrl') and self.test_ctrl and self.test_ctrl.is_running:
+            warning = "当前有测试正在运行！\n确定要退出程序吗？\n退出后测试数据将不完整。"
+        if ConfirmDialog.confirm(self, warning, title="退出程序", danger=True):
+            from PySide2.QtWidgets import QApplication
+            QApplication.instance().quit()
+
+    def closeEvent(self, event):
+        """窗口关闭事件 - 带确认提示"""
+        from confirm_dialog import ConfirmDialog
+        warning = "确定要退出程序吗？"
+        if hasattr(self, 'test_ctrl') and self.test_ctrl and self.test_ctrl.is_running:
+            warning = "当前有测试正在运行！\n确定要退出程序吗？\n退出后测试数据将不完整。"
+        if ConfirmDialog.confirm(self, warning, title="退出程序", danger=True):
+            event.accept()
+        else:
+            event.ignore()
+
     def _on_click(self, name):
         logger.debug(f"[MAIN] 按钮点击: {name}")
         # ===== status: start test(TestController) =====
@@ -1179,6 +1201,12 @@ class MoistureAnalyzer(QMainWindow):
 
         # ===== status: stop test(TestController) =====
         if name == "停止测试":
+            from confirm_dialog import ConfirmDialog
+            if not ConfirmDialog.confirm(
+                self, "确定要停止当前测试吗？\n停止后测试数据将不完整。",
+                title="停止测试", danger=True
+            ):
+                return
             self.test_ctrl.stop_test()
             self.btn_start.setEnabled(True)
             self.btn_start.setText("开始测试")
@@ -1213,6 +1241,9 @@ class MoistureAnalyzer(QMainWindow):
             dlg = HardwareCheckDialog(self, serial_mgr=self.serial_mgr)
             dlg.exec_()
         elif name == "试验参数":
+            from password_dialog import PasswordDialog
+            if not PasswordDialog.verify(self, "user"):
+                return
             from settings_dialog import SettingsDialog
             dlg = SettingsDialog(self)
             dlg.params_changed.connect(self._rebuild_table)
@@ -1580,6 +1611,11 @@ def main():
     except socket.error:
         QMessageBox.warning(None, "提示", "程序已在运行中，不能重复打开。")
         sys.exit(1)
+
+    # 开机密码验证
+    from password_dialog import PasswordDialog
+    if not PasswordDialog.verify(None, "boot"):
+        sys.exit(0)
 
     # 启动画面
     w = MoistureAnalyzer()

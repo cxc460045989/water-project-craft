@@ -188,22 +188,25 @@ class CmdSender(QObject):
     sig_temp = Signal(float)
 
     RESP_TIMEOUT_MS = 200
-    MAX_RETRIES = 3
+    TOTAL_TIMEOUT_MS = 60000  # 总超时: 1分钟
 
     def __init__(self, serial_mgr, cmd_bytes, desc="", parent=None):
         super().__init__(parent)
         self._serial = serial_mgr
         self._cmd_bytes = cmd_bytes
         self._desc = desc
-        self._retry = 0
+        self._start_time = 0.0
         self._started = False
+        self._first_send = True
         self._uplink_buf = UplinkBuffer()
 
     def start(self):
+        import time as _time
         if self._started:
             return
         self._started = True
-        self._retry = 0
+        self._start_time = _time.time()
+        self._first_send = True
         self._drain_and_send()
 
     def _drain_and_send(self):
@@ -230,10 +233,11 @@ class CmdSender(QObject):
             n = self._serial.send(self._cmd_bytes)
         except Exception:
             pass
-        if n == 0 and self._retry == 0:
+        if n == 0 and self._first_send:
             logger.warning("[CmdSender] 发送失败: %s" % self._desc)
-        if self._retry == 0:
+        if self._first_send:
             logger.info("[CmdSender] 已发送: %s | %s" % (self._desc, self._cmd_bytes.hex()))
+            self._first_send = False
 
         # 连接 readyRead 等待响应
         if hasattr(self._serial, 'data_received'):
@@ -264,7 +268,7 @@ class CmdSender(QObject):
         self.sig_done.emit(True)
 
     def _on_timeout(self):
-        """200ms 超时: 检查 bytesAvailable → 重试或失败"""
+        """200ms 超时: 检查 bytesAvailable → 重试或60s总超时"""
         try:
             avail = self._serial.bytesAvailable
         except Exception:
@@ -275,13 +279,13 @@ class CmdSender(QObject):
                 self._on_data(raw)
                 return
 
-        self._retry += 1
-        if self._retry < self.MAX_RETRIES:
-            self._do_send()
-        else:
+        import time as _time
+        if _time.time() - self._start_time > self.TOTAL_TIMEOUT_MS / 1000.0:
             self._cleanup()
-            logger.warning("[CmdSender] 发送失败(重试%d次): %s" % (self.MAX_RETRIES, self._desc))
+            logger.warning("[CmdSender] 发送超时(60s无响应): %s" % self._desc)
             self.sig_done.emit(False)
+        else:
+            self._do_send()
 
     def _cleanup(self):
         if hasattr(self._serial, 'data_received'):
@@ -295,10 +299,10 @@ class CmdSender(QObject):
 # send_cmd_with_uplink_check — 兼容层（同步函数，逐步过渡期使用）
 # ============================================================
 def send_cmd_with_uplink_check(serial_mgr, cmd_bytes, desc="", temp_callback=None):
-    """发指令 → 等仪器即时响应（上行帧），200ms 超时重试（最多3次）
+    """发指令 → 等仪器即时响应（上行帧），持续重试直至成功或60秒超时
 
-    兼容层: 内部使用 QTimer + 事件循环等待，有微阻塞但可控。
-    新代码请使用 CmdSender。
+    仪器可能在非空闲状态暂时无上行帧，因此不设重试次数上限，
+    而是持续重试直到收到响应或总时间超过60秒。
 
     参数:
         serial_mgr: SerialManager 实例
@@ -309,9 +313,10 @@ def send_cmd_with_uplink_check(serial_mgr, cmd_bytes, desc="", temp_callback=Non
     import time as _time
     from PySide2.QtWidgets import QApplication
 
-    RESP_TIMEOUT = 0.2
-    MAX_RETRIES = 3
+    RESP_WAIT_S = 0.2       # 每次等待响应窗口
+    TOTAL_TIMEOUT_S = 60.0  # 总超时: 1分钟
     first_attempt = True
+    overall_start = _time.time()
 
     # 一次性排空旧数据（非阻塞）
     try:
@@ -331,11 +336,16 @@ def send_cmd_with_uplink_check(serial_mgr, cmd_bytes, desc="", temp_callback=Non
                 except Exception:
                     pass
 
-    for _retry in range(MAX_RETRIES):
+    while True:
+        # 总超时检查
+        if _time.time() - overall_start > TOTAL_TIMEOUT_S:
+            logger.warning("[CMD] 发送超时(60s无响应): %s" % desc)
+            return False
+
         n = serial_mgr.send(cmd_bytes)
         if n == 0:
             if first_attempt:
-                logger.warning("[CMD] 发送失败(%s)，准备重试" % desc)
+                logger.warning("[CMD] 发送失败(%s)，将持续重试" % desc)
                 first_attempt = False
             _time.sleep(0.1)
             continue
@@ -346,7 +356,9 @@ def send_cmd_with_uplink_check(serial_mgr, cmd_bytes, desc="", temp_callback=Non
         # 等待响应
         resp_start = _time.time()
         resp_received = False
-        while (_time.time() - resp_start) < RESP_TIMEOUT:
+        while (_time.time() - resp_start) < RESP_WAIT_S:
+            if _time.time() - overall_start > TOTAL_TIMEOUT_S:
+                break
             try:
                 avail = serial_mgr.bytesAvailable
             except Exception:
@@ -375,8 +387,8 @@ def send_cmd_with_uplink_check(serial_mgr, cmd_bytes, desc="", temp_callback=Non
             logger.info("[CMD] 发送成功，收到响应: %s" % desc)
             return True
 
-    logger.warning("[CMD] 发送失败(重试%d次无响应): %s" % (MAX_RETRIES, desc))
-    return False
+        # 未收到响应，短暂等待后重试
+        _time.sleep(0.1)
 
 
 # ============================================================

@@ -309,6 +309,7 @@ class SettingsDialog(QDialog):
         btn_layout = QHBoxLayout()
         btn_layout.setSpacing(8)
         btn_reset_pwd = QPushButton(" 密码重置 "); apply_button_types(btn_reset_pwd, "neutral")
+        btn_reset_pwd.clicked.connect(self._on_reset_password)
         btn_defaults = QPushButton(" 默认值 "); apply_button_types(btn_defaults, "neutral")
         btn_defaults.clicked.connect(self._restore_factory_defaults)
         btn_layout.addWidget(btn_reset_pwd)
@@ -469,6 +470,14 @@ class SettingsDialog(QDialog):
         self.cb_tw_fan.setChecked(bool(d["tw_fan"]))
         self.cb_retest.setChecked(bool(d["retest"]))
         self.cb_autoclear.setChecked(bool(d["autoclear"]))
+
+    def _on_reset_password(self):
+        """密码重置: 先验证管理员密码，通过后打开密码设置"""
+        from password_dialog import PasswordDialog, PasswordSettingsDialog
+        if not PasswordDialog.verify(self, "admin"):
+            return
+        dlg = PasswordSettingsDialog(self)
+        dlg.exec_()
 
     def _restore_factory_defaults(self):
         """默认值按钮：恢复当前方法的工厂默认值"""

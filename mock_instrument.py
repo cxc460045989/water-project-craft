@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """MockInstrumentSimulator - 智能仪器模拟器
 在无硬件环境下完整模拟微机全自动水分测定仪的串口行为。
 QTimer 驱动自动生成上行帧，响应全部下行指令，温度/重量动态变化。
@@ -49,6 +49,7 @@ class MockInstrumentSimulator(QObject):
         self._crucible_weights = {}
         self._sample_weights = {}
         self._in_sample_phase = False
+        self._dry_read_count = 0  # 烘干后称重次数，用于恒重模拟(每轮递减)
 
         # 上行帧缓存（供 SimSerialAdapter 读取，跨线程需锁保护）
         self._uplink_buf = bytearray()
@@ -125,10 +126,23 @@ class MockInstrumentSimulator(QObject):
         physical = self._crucible_weights[pos]
         if self._in_sample_phase:
             if pos not in self._sample_weights:
-                if pos <= 6:
-                    self._sample_weights[pos] = round(0.95 + pos * 0.01, 4)
+                if self._moisture_testing:
+                    # 烘干后重量 (水分测试模式, 称量/恒重阶段)
+                    if pos == 1:
+                        self._sample_weights[pos] = 0.0  # pos 1 是校正坩埚位, 无样品
+                    elif pos <= 7:
+                        # 分析水: 干燥后 0.5~0.9g (pos 2~7), 每轮递减模拟恒重
+                        base = 0.5 + (pos - 2) * 0.08
+                        self._sample_weights[pos] = round(base - self._dry_read_count * 0.0003, 4)
+                    else:
+                        # 全水: 干燥后 0~0.9g (pos 8+)
+                        base = (pos - 7) * 0.05
+                        self._sample_weights[pos] = round(base - self._dry_read_count * 0.0002, 4)
                 else:
-                    self._sample_weights[pos] = round(9.50 + (pos - 6) * 0.12, 4)
+                    if pos <= 6:
+                        self._sample_weights[pos] = round(0.95 + pos * 0.01, 4)
+                    else:
+                        self._sample_weights[pos] = round(9.50 + (pos - 6) * 0.12, 4)
             physical += self._sample_weights[pos]
         return physical
 
@@ -179,6 +193,8 @@ class MockInstrumentSimulator(QObject):
             self._plate_pos = 0
         elif fc == CMD.TARE:
             self._tare_offset = -self._get_physical_weight()
+            if self._moisture_testing:
+                self._dry_read_count += 1  # 烘干后每次去皮计数，模拟恒重递减
         elif fc == CMD.CALIBRATE:
             pass
         elif fc == CMD.CLOSE_LID:
@@ -217,13 +233,17 @@ class MockInstrumentSimulator(QObject):
             self._in_sample_phase = False
             self._weigh_mode = False
             self._moisture_testing = False
-            print("[MOCK] 收到复位指令 (RESET 0x20), _in_sample_phase=False")
+            self._sample_weights.clear()  # 退出水分测试模式, 下次称重按原始范围生成
+            self._dry_read_count = 0
+            print("[MOCK] 收到复位指令 (RESET 0x20), _in_sample_phase=False, 样品重已重置为原始范围")
         elif fc in (CMD.MOISTURE_TEST_1, CMD.MOISTURE_TEST_2):
             self._moisture_testing = True
             self._weigh_mode = False
             self._in_sample_phase = True
+            self._sample_weights.clear()  # 清空旧称重数据, 强制按干燥后范围重新生成
+            self._dry_read_count = 0
             mode_name = "鼓风" if fc == CMD.MOISTURE_TEST_1 else "氮气"
-            print("[MOCK] 收到开始测试指令(%s), 进入水分测试模式" % mode_name)
+            print("[MOCK] 收到开始测试指令(%s), 进入水分测试模式, 样品重已重置为干燥后范围" % mode_name)
         elif 0x35 <= fc <= 0x9C:
             pos = fc - 0x34
             if 1 <= pos <= 99:

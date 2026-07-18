@@ -17,15 +17,10 @@ from PySide2.QtGui import QFont
 class ConfirmDialog(QDialog):
     """通用确认对话框，纯文本/简约风格"""
 
-    TITLE_STYLE = """
+    MSG_STYLE = """
         font-size: 15px;
         font-weight: bold;
         color: #1F2937;
-        padding: 0 4px;
-    """
-    MSG_STYLE = """
-        font-size: 14px;
-        color: #4B5563;
         padding: 0 4px;
     """
 
@@ -37,27 +32,16 @@ class ConfirmDialog(QDialog):
         self.setWindowFlags(
             self.windowFlags() & ~Qt.WindowContextHelpButtonHint
         )
-        self.setFixedSize(420, 200)
+        self.setFixedSize(420, 160)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(24, 24, 24, 20)
         layout.setSpacing(0)
 
-        # 标题
-        title_label = QLabel(title)
-        title_label.setStyleSheet(self.TITLE_STYLE + "padding-bottom: 16px;")
-        layout.addWidget(title_label)
-
-        # 分割线
-        sep = QWidget()
-        sep.setFixedHeight(1)
-        sep.setStyleSheet("background-color: #E5E7EB;")
-        layout.addWidget(sep)
-
         # 消息
         msg_label = QLabel(message)
         msg_label.setWordWrap(True)
-        msg_label.setStyleSheet(self.MSG_STYLE + "padding: 20px 4px;")
+        msg_label.setStyleSheet(self.MSG_STYLE + "padding: 16px 4px;")
         msg_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         layout.addWidget(msg_label)
 

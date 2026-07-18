@@ -44,7 +44,8 @@ def _init_db(conn):
             tw_low REAL DEFAULT 9.0000, tw_high REAL DEFAULT 12.0000,
             tw_fan INTEGER DEFAULT 1, tw_corr REAL DEFAULT 0.00,
             beep INTEGER DEFAULT 1, retest INTEGER DEFAULT 0,
-            autoclear INTEGER DEFAULT 0, sample_count INTEGER DEFAULT 24, hy_current TEXT DEFAULT ""
+            autoclear INTEGER DEFAULT 0, sample_count INTEGER DEFAULT 24, hy_current TEXT DEFAULT "",
+            boot_password TEXT DEFAULT "1234", user_password TEXT DEFAULT "1234", admin_password TEXT DEFAULT "1234"
         );
         INSERT OR IGNORE INTO params (id) VALUES (1);
 
@@ -163,8 +164,18 @@ def _init_db(conn):
         cur.execute("ALTER TABLE params ADD COLUMN com_port TEXT DEFAULT ''")
     except sqlite3.OperationalError:
         pass
-    # 新增字段兼容
-    pass
+    try:
+        cur.execute("ALTER TABLE params ADD COLUMN boot_password TEXT DEFAULT '1234'")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        cur.execute("ALTER TABLE params ADD COLUMN user_password TEXT DEFAULT '1234'")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        cur.execute("ALTER TABLE params ADD COLUMN admin_password TEXT DEFAULT '1234'")
+    except sqlite3.OperationalError:
+        pass
 
 
 # ========== 工厂默认值 ==========
@@ -242,6 +253,32 @@ def save_params(**kwargs):
     sets = ", ".join(f"{k}=?" for k in kwargs)
     vals = list(kwargs.values())
     conn.execute(f"UPDATE params SET {sets} WHERE id=1", vals)
+    conn.commit()
+    conn.close()
+
+
+# ========== 密码读写 ==========
+
+def load_passwords():
+    """返回 {'boot': str, 'user': str, 'admin': str}"""
+    conn = get_conn()
+    row = conn.execute(
+        "SELECT boot_password, user_password, admin_password FROM params WHERE id=1"
+    ).fetchone()
+    conn.close()
+    if row:
+        return {"boot": row[0] or "1234", "user": row[1] or "1234", "admin": row[2] or "1234"}
+    return {"boot": "1234", "user": "1234", "admin": "1234"}
+
+
+def save_password(pwd_type, value):
+    """保存指定类型密码: 'boot' | 'user' | 'admin'"""
+    col_map = {"boot": "boot_password", "user": "user_password", "admin": "admin_password"}
+    col = col_map.get(pwd_type)
+    if not col:
+        return
+    conn = get_conn()
+    conn.execute(f"UPDATE params SET {col}=? WHERE id=1", (value,))
     conn.commit()
     conn.close()
 

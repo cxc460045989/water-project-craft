@@ -223,7 +223,7 @@ class TestWorker(QObject):
             self._transition(_Phase.BRANCH_AW)
 
     def stop_test(self):
-        """停止测试 - 关闭加热/气体/蜂鸣"""
+        """停止测试 - 复位仪器(硬件自动关闭加热/气路)"""
         _log("测试停止")
         self._running = False
         self._paused = False
@@ -233,11 +233,6 @@ class TestWorker(QObject):
             self._serial.data_received.disconnect(self._on_uplink_data)
         except Exception:
             pass
-        self._safe_send_cmd(CMD.HEAT_OFF, "关闭加热")
-        self._safe_send_cmd(CMD.FAN_OFF, "关鼓风")
-        self._safe_send_cmd(CMD.N2_OFF, "关氮气")
-        self._safe_send_cmd(CMD.GAS_ALL_OFF, "关闭全部气体")
-        self._safe_send_cmd(CMD.BEEPER_OFF, "关蜂鸣")
         self._safe_send_cmd(CMD.RESET, "仪器复位")
 
     def pause_test(self):
@@ -896,38 +891,16 @@ class TestWorker(QObject):
         return dry
 
     def _do_weighing(self):
-        """批量称量: 首轮称校正坩埚→计算校正值→称所有样品
+        """批量称量: 从2号样位开始称所有样品
 
-        第1轮: 称校正坩埚(计算tare_offset) + 称样品 → 写入 check_dry_weight
-        第2轮起: 只称样品(用已算好的tare_offset) → 写入 dry_weight
+        第1轮: 称样品 → 写入 check_dry_weight
+        第2轮起: 称样品 → 写入 dry_weight
         """
         mode = "分析水" if self._is_aw else "全水"
-        corr_w = self.cfg.aw_corr_crucible if self._is_aw else self.cfg.tw_corr_crucible
 
         self._dry_cycle += 1
         is_first = (self._dry_cycle == 1)
-
-        # ---- 首轮: 称校正坩埚, 计算校正值 ----
-        if is_first and corr_w > 0:
-            self.sig_status_msg.emit("正在称校正坩埚...")
-            corr_name = "校正坩埚"
-            if self._table_ref:
-                item = self._table_ref.item(0, 0)
-                if item and item.text().strip():
-                    corr_name = item.text().strip()
-            corr_tare = self._get_tare_from_db(0)
-            self.sig_weigh_result.emit(0, 0.0, self._phase)  # 通知UI开始称校正坩埚
-            corr_dry = self._weigh_single(0, corr_name, corr_tare, desc="校正坩埚")
-            if corr_dry is not None:
-                self._tare_offset = corr_w - corr_dry
-                _log("校正坩埚: corr_w=%.4f corr_dry=%.4f tare_offset=%.4f" %
-                     (corr_w, corr_dry, self._tare_offset))
-                self.sig_weigh_result.emit(0, corr_dry, self._phase)
-            else:
-                self._tare_offset = corr_w  # 降级: 直接用坩埚校正值
-            self._safe_send_cmd(CMD.SAMPLE_PLATE_UP, "样盘上升(校正坩埚完成)")
-        else:
-            self._tare_offset = corr_w  # 非首轮直接使用坩埚校正值
+        self._tare_offset = 0.0
 
         # ---- 称量所有样品 ----
         col_name = "检查性干燥重量" if is_first else "干燥重量"
@@ -1013,9 +986,6 @@ class TestWorker(QObject):
             _log("恒重检查未通过, 重新加热(第 %d 轮)" % (self._dry_cycle + 1))
             self.sig_status_msg.emit("恒重检查未通过, 重新加热(第%d轮)" %
                                       (self._dry_cycle + 1))
-            self._dry_sub_state = _DrySubState.START
-            self._step_dry_start()
-            self._dry_sub_state = _DrySubState.START
             self._step_dry_start()
 
     # ========= 串口工具方法 =========
@@ -1032,7 +1002,9 @@ class TestWorker(QObject):
             temp_callback=lambda t: (setattr(self, '_current_temp', t), self.sig_temp_update.emit(t)),
         )
         if not ok:
-            _log("指令发送失败(已重试3次): %s" % desc)
+            _log("指令发送超时(60s无响应): %s" % desc)
+            self.sig_error.emit("指令发送超时: %s\n请检查串口连接或仪器状态" % desc)
+            self.stop_test()
             return
         _log("指令已发送: %s" % desc)
         if callback:
