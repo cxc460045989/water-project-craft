@@ -4,7 +4,7 @@
 依赖: pip install pyside2 pyserial
 """
 
-import sys, os, time
+import sys, os
 from PySide2.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QTableWidget, QTableWidgetItem, QComboBox, QLabel,
@@ -416,7 +416,11 @@ class MoistureAnalyzer(QMainWindow):
         if _com:
             logger.info("[SERIAL] 启动时自动打开串口: " + str(_com))
             self.serial_mgr.open(port=_com)
-            # readyRead 信号驱动, 无需手动轮询
+            # 启动上行帧轮询: 每200ms读取串口上行帧并触发 data_received 信号
+            if not hasattr(self.serial_mgr, '_mock_poll_timer'):
+                self._uplink_poll_timer = QTimer(self)
+                self._uplink_poll_timer.timeout.connect(self._poll_uplink)
+                self._uplink_poll_timer.start(200)
         else:
             logger.info("[SERIAL] 未配置串口号，启动后不自动打开")
     # ---- 串口回调 ----
@@ -425,6 +429,20 @@ class MoistureAnalyzer(QMainWindow):
         ts = datetime.datetime.now().strftime("%H:%M:%S.%f")[:-3]
         self._port_name = self.serial_mgr.port_name or "?"
         logger.info("[SERIAL][" + self._port_name + "] " + ts + " 串口已连接")
+
+    def _poll_uplink(self):
+        """周期性轮询串口上行帧, 触发 data_received 更新 UI"""
+        if not self.serial_mgr.is_connected:
+            return
+        if self.serial_mgr._bypass_poll:
+            return
+        try:
+            raw = self.serial_mgr.read_all()
+        except Exception:
+            return
+        if raw:
+            self.serial_mgr.update_uplink_time()
+            self.serial_mgr.data_received.emit(raw)
 
     def _on_serial_disconnected(self):
         import datetime
@@ -440,12 +458,10 @@ class MoistureAnalyzer(QMainWindow):
             self.temp_val.setText("%.1f" % f["temperature"])
             if f["btn_pressed"]:
                 pass
-            # 节流: 每秒最多打印一条上行帧日志
-            _now = time.time()
-            if _now - getattr(self, "_last_uplink_log_ts", 0) >= 1.0:
-                self._last_uplink_log_ts = _now
+            if getattr(self, "_print_counter", 0) % 5 == 0:
                 logger.info("[SERIAL][" + getattr(self, "_port_name", "?") + "] 上行帧: %s  temp=%.1f weight=%.4f online=%d btn=%d" % (
                     f["raw_str"], f["temperature"], f["weight"], f["online"], f["btn_pressed"]))
+            self._print_counter = getattr(self, "_print_counter", 0) + 1
 
 
     def _on_serial_error(self, msg):

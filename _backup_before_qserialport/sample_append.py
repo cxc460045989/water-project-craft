@@ -93,6 +93,8 @@ class SampleAppendWorker(QObject):
             self.sig_weight_update.emit(f["weight"])
             if f["btn_pressed"]:
                 self._btn_pressed = True
+            _log("[上行帧] temp=%.1f weight=%.4f btn=%d" %
+                 (f["temperature"], f["weight"], f["btn_pressed"]))
 
     # ===== 步骤1: 样盘移动到目标工位 =====
 
@@ -317,6 +319,7 @@ class SampleAppendWorker(QObject):
         if not self._serial or not self._serial.is_connected:
             return
         try:
+            self._serial.flush_input()
             cmd = CommandBuilder.build_command(func_code)
             self._serial.send(cmd)
             _log("[安全] %s %s" % (desc, cmd.hex()))
@@ -326,7 +329,7 @@ class SampleAppendWorker(QObject):
     def _read_serial_weight(self):
         """主动从串口读取天平重量（不依赖信号槽，对齐 weigh_controller._read_uplink_weight）"""
         try:
-            raw = self._serial.readAll()
+            raw = self._serial.read_all()
         except Exception:
             return None
         if not raw:

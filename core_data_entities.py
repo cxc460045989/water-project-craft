@@ -164,7 +164,7 @@ class DeviceOperator:
             {"temperature": float, "weight": float, "online": int, "btn_pressed": int}
         """
         try:
-            raw = self._serial.read_all()
+            raw = self._serial.readAll()
         except Exception:
             return None
         if not raw:
@@ -173,7 +173,6 @@ class DeviceOperator:
         buf = UplinkBuffer()
         frames = buf.feed(raw)
         if frames:
-            self._serial.update_uplink_time()
             return frames[-1]
         return None
 

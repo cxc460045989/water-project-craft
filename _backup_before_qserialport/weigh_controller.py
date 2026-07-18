@@ -107,6 +107,8 @@ class WeighWorker(QThread):
                 pass
 
     def run(self):
+        # 屏蔽主线程 poll timer，避免竞争串口数据
+        self._serial.set_bypass_poll(True)
         try:
             if self._cur_phase == "tare":
                 self._batch_tare()
@@ -126,11 +128,13 @@ class WeighWorker(QThread):
             traceback.print_exc()
         finally:
             self._running = False
+            self._serial.set_bypass_poll(False)
             self.sig_finished.emit()
 
     # ===== 批量称坩埚 =====
     def _batch_tare(self):
         _log("批量坩埚称量开始, 共 " + str(len(self._valid_rows)) + " 个")
+        self._send_cmd(CMD.RESET, desc="仪器复位")
         self._send_long_duration_cmd(CMD.CLOSE_LID, desc="正在关闭炉盖")
 
         # 先发送坩埚校正值到仪器
@@ -202,6 +206,7 @@ class WeighWorker(QThread):
     # ===== 单个称样品 =====
     def _single_sample(self):
         _log("单个称量样品开始, 共 " + str(len(self._valid_rows)) + " 个")
+        self._send_cmd(CMD.RESET, desc="仪器复位")
         self.sig_status_msg.emit("正在进入称重模式...")
         self._send_cmd(CMD.ENTER_WEIGH_MODE, desc="进入称量样重状态")
         self._sleep(CMD_INTERVAL_S)
@@ -281,6 +286,7 @@ class WeighWorker(QThread):
         individual_rows = [(r, n, m) for r, n, m in self._valid_rows if r > 0]
         _log("单独称量样品开始, 有效样品 " + str(len(individual_rows)) + " 个")
 
+        self._send_cmd(CMD.RESET, desc="仪器复位")
         self._send_cmd(CMD.ENTER_WEIGH_MODE, desc="进入称量样重状态")
         self._sleep(CMD_INTERVAL_S)
 
@@ -358,6 +364,7 @@ class WeighWorker(QThread):
     def _reweigh_tare(self):
         """重新称量-准备阶段: 只做机械动作和发送校正值，不称任何坩埚"""
         _log("重新称量准备阶段")
+        self._send_cmd(CMD.RESET, desc="仪器复位")
         self._send_long_duration_cmd(CMD.CLOSE_LID, desc="正在关闭炉盖")
         corr_w = self._get_crucible_correction_weight()
         if corr_w > 0:
@@ -481,7 +488,7 @@ class WeighWorker(QThread):
 
     def _check_instrument_button(self):
         try:
-            raw = self._serial.readAll()
+            raw = self._serial.read_all()
         except Exception:
             return False
         if not raw:
@@ -602,7 +609,7 @@ class WeighWorker(QThread):
             self._serial, cmd, desc,
         )
         if not ok:
-            _log("指令发送失败(已重试3次): %s" % desc)
+            self.sig_error.emit("指令发送失败: " + desc)
 
     # 机械类指令（不改变炉温，无需温度检测）
     _MECHANICAL_CMDS = {CMD.SAMPLE_PLATE_UP, CMD.SAMPLE_PLATE_DOWN,
@@ -661,7 +668,7 @@ class WeighWorker(QThread):
 
     def _read_uplink_temp(self):
         try:
-            raw = self._serial.readAll()
+            raw = self._serial.read_all()
         except Exception:
             return 0.0, None
         if not raw:
@@ -674,6 +681,7 @@ class WeighWorker(QThread):
         f = frames[-1]
         if f is not None:
             self._last_uplink_time = time.time()
+            self._serial.update_uplink_time()
             return f["weight"], f["temperature"]
         return 0.0, None
 
@@ -687,11 +695,11 @@ class WeighWorker(QThread):
             self._serial, cmd, "移动到" + str(position) + "号位",
         )
         if not ok:
-            _log("样盘移动指令发送失败(已重试3次): pos=%d" % position)
+            self.sig_error.emit("样盘移动指令发送失败 pos=" + str(position))
 
     def _read_uplink_weight(self):
         try:
-            raw = self._serial.readAll()
+            raw = self._serial.read_all()
         except Exception:
             return 0.0, False
         if not raw:
@@ -705,7 +713,19 @@ class WeighWorker(QThread):
             return 0.0, False
         f = frames[-1]
         if f is not None:
+            self._serial.update_uplink_time()
             self._last_btn_pressed = bool(f.get("btn_pressed", 0))
+            raw_str = f.get("raw_str", "?")
+            # 数值变化立即打印; 不变时按 1s 节流打印(与正式模式日志密度一致)
+            changed = not hasattr(self, "_last_uplink_raw") or self._last_uplink_raw != raw_str
+            throttled = (not changed and
+                         getattr(self, "_last_uplink_log_time", 0) + 1.0 < time.time())
+            if changed or throttled:
+                _log("上行帧: raw=" + raw_str +
+                     " 重量={:.4f}g 温度={:.1f}C 联机={} 按键={}".format(
+                     f["weight"], f["temperature"], f["online"], f["btn_pressed"]))
+                self._last_uplink_raw = raw_str
+                self._last_uplink_log_time = time.time()
         return f["weight"], True
 
     def _get_tare_weight(self, row):
@@ -943,9 +963,3 @@ class WeighController(QObject):
         if self._worker and self._worker.isRunning():
             self._worker.stop()
             self._worker.wait(3000)
-        # 结束称量时发送复位指令
-        if self._serial_mgr and self._serial_mgr.is_connected:
-            from protocol_layer import CommandBuilder, CMD
-            cmd = CommandBuilder.build_command(CMD.RESET)
-            self._serial_mgr.send(cmd)
-            _log("结束称量, 发送仪器复位")

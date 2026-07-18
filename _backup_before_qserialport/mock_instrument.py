@@ -1,30 +1,22 @@
 # -*- coding: utf-8 -*-
 """MockInstrumentSimulator - 智能仪器模拟器
 在无硬件环境下完整模拟微机全自动水分测定仪的串口行为。
-QTimer 驱动自动生成上行帧，响应全部下行指令，温度/重量动态变化。
-SimSerialAdapter 通过 readyRead 信号与 SerialManager 的 _on_ready_read 对接。
+后台线程自动生成上行帧，响应全部下行指令，温度/重量动态变化。
 
 用法:
     from mock_instrument import create_mock_serial_manager
-    mgr, sim = create_mock_serial_manager()
+    mgr = create_mock_serial_manager()
     # mgr 即为已连接、已启动模拟的 SerialManager
 """
 
-import time
+import time, threading
 from protocol_layer import CommandBuilder, CMD
-from PySide2.QtCore import QObject, Signal, QTimer
 
 
-class MockInstrumentSimulator(QObject):
-    """智能仪器模拟器 — 后台线程驱动
+class MockInstrumentSimulator:
+    """智能仪器模拟器 — 后台线程驱动"""
 
-    用独立线程生成上行帧，确保在 send_cmd_with_uplink_check 的
-    time.sleep() 期间也能持续产生数据（QTimer 会被 sleep 阻塞）。
-    """
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-
+    def __init__(self):
         # 上行帧参数
         self._temp = 25.0
         self._weight = 0.0
@@ -46,45 +38,49 @@ class MockInstrumentSimulator(QObject):
         self._moisture_testing = False
 
         # 模拟称重数据
-        self._crucible_weights = {}
-        self._sample_weights = {}
-        self._in_sample_phase = False
+        self._crucible_weights = {}   # {position: weight_g} 每个样位的坩埚重
+        self._sample_weights = {}     # {position: sample_weight_g}
+        self._in_sample_phase = False  # True=炉盖已开，进入样品称量阶段
 
-        # 上行帧缓存（供 SimSerialAdapter 读取，跨线程需锁保护）
+        # 上行帧缓存（供 SimSerialAdapter 读取）
         self._uplink_buf = bytearray()
+        self._uplink_lock = threading.Lock()  # 保护 _uplink_buf 读写
         self._resp_buf = bytearray()
-        import threading
-        self._buf_lock = threading.Lock()
 
-        # 后台线程驱动（QTimer 在 time.sleep() 期间不触发，必须用线程）
+        # 后台线程
+        self._running = False
+        self._thread = None
+
+        # 模拟升温速率 (℃/s): 每500ms升高5℃, 即10℃/s
+        # 方便测试「温度打到设定温度-5℃时进入恒温」逻辑
         import os as _os
-        import threading
         _speed = _os.environ.get('WATER_SPEED_MODE', '0') == '1'
         self._heat_rate = 10.0
         self._cool_rate = 3.0
-        self._running = False
-        self._thread = None
+
+    # ===== 生命周期 =====
 
     def start(self):
         if self._running:
             return
         self._running = True
-        import threading
         self._thread = threading.Thread(target=self._auto_report_loop, daemon=True)
         self._thread.start()
 
     def stop(self):
         self._running = False
 
+    # ===== 后台上行帧生成 =====
+
     def _auto_report_loop(self):
-        import time as _time
         while self._running:
             self._auto_report()
-            _time.sleep(self._interval_ms / 1000.0)
+            time.sleep(self._interval_ms / 1000.0)
 
     def _auto_report(self):
         if not self._running:
             return
+        # 控温逻辑
         prev_temp = self._temp
         if self._heater_on and self._target_temp > 0:
             diff = self._target_temp - self._temp
@@ -95,28 +91,37 @@ class MockInstrumentSimulator(QObject):
             elif abs(diff) > 0.1:
                 self._temp += 2.0 * (self._interval_ms / 1000.0) if diff > 0 else -0.5 * (self._interval_ms / 1000.0)
             self._temp = min(self._temp, self._target_temp + 0.5)
+            # 温度里程碑日志: 接近目标温度时打印
             threshold = self._target_temp - 5
             if prev_temp < threshold <= self._temp:
-                print("[MOCK] 温度达标! %.1fC >= %dC (目标%dC-5), 可进入恒温" % (
+                print("[MOCK] 温度达标! %.1f°C >= %d°C (目标%d°C-5), 可进入恒温" % (
                     self._temp, threshold, self._target_temp))
             elif int(prev_temp / 10) != int(self._temp / 10) and self._temp < self._target_temp:
-                print("[MOCK] 加热中: %.1fC -> 目标 %dC" % (self._temp, self._target_temp))
+                print("[MOCK] 加热中: %.1f°C → 目标 %d°C" % (self._temp, self._target_temp))
         elif not self._heater_on and self._temp > 25.0:
             self._temp -= self._cool_rate * (self._interval_ms / 1000.0)
             self._temp = max(self._temp, 25.0)
 
+        # 根据当前状态自动计算模拟重量（模拟真实仪器持续输出重量读数）
         self._weight = self._compute_weight()
 
+        # 组装上行帧
         raw_temp = int(round(self._temp * 10))
         raw_weight = int(round(self._weight * 10000)) + 3000000
         raw_temp = max(0, min(9999, raw_temp))
         raw_weight = max(0, min(9999999, raw_weight))
         frame = "S%04d%07d%d%dEND" % (raw_temp, raw_weight, self._online, self._btn)
-        with self._buf_lock:
+        with self._uplink_lock:
             self._uplink_buf.extend(frame.encode("ascii"))
+        # 复位按键
         self._btn = 0
 
     def _get_physical_weight(self):
+        """计算当前物理重量（不含去皮偏移）
+
+        样盘上位: 天平空载, physical = 0
+        样盘下位: 坩埚(和样品)压在天平上, physical = 实际值
+        """
         if self._plate_pos == 1:
             return 0.0
         pos = self._position
@@ -133,18 +138,25 @@ class MockInstrumentSimulator(QObject):
         return physical
 
     def _compute_weight(self):
+        """天平读数 = 物理重量 + 去皮偏移"""
         return self._get_physical_weight() + self._tare_offset
 
     # ===== 下行指令处理 =====
 
     def feed_cmd(self, data):
+        """接收下行指令，解析并模拟执行，返回响应字节"""
         if not data:
             return b""
+
+        # 握手 — 新协议返回完整响应帧 4F 4B 01 45 4E 44
         if self._is_handshake(data):
             self._resp_buf.extend(b'\x4F\x4B\x01\x45\x4E\x44')
             return b'\x4F\x4B\x01\x45\x4E\x44'
+
+        # 固定4字节指令
         if len(data) >= 4 and data[0] == 0x5A and data[-1] == 0x44:
             return self._handle_4byte_cmd(data)
+
         return b""
 
     def _is_handshake(self, data):
@@ -154,10 +166,11 @@ class MockInstrumentSimulator(QObject):
         if len(data) < 4:
             return b""
         if data[1] != 0x4D:
-            if data[1] == 0x57:
+            # 变长指令
+            if data[1] == 0x57:  # 控温
                 self._handle_temp_control(data)
-            elif data[1] == 0x58:
-                pass
+            elif data[1] == 0x58:  # 发送天平数据
+                pass  # 无需响应
             return b""
 
         fc = data[2]
@@ -165,7 +178,6 @@ class MockInstrumentSimulator(QObject):
             return b'\x4F\x4B\x01\x45\x4E\x44'
         elif fc == CMD.BEEPER_1S:
             self._beeper_on = True
-            import threading
             threading.Timer(1.0, lambda: setattr(self, '_beeper_on', False)).start()
         elif fc == CMD.BEEPER_ON:
             self._beeper_on = True
@@ -173,15 +185,19 @@ class MockInstrumentSimulator(QObject):
             self._beeper_on = False
         elif fc == CMD.SAMPLE_PLATE_UP:
             self._plate_pos = 1
+            # 水分测试进行中不清除样品阶段标记，保证后续称重返回样品重量
             if not self._moisture_testing:
                 self._in_sample_phase = False
         elif fc == CMD.SAMPLE_PLATE_DOWN:
             self._plate_pos = 0
         elif fc == CMD.TARE:
+            # 去皮: 将当前物理重量归零, 直接设置偏移量
+            # 不累加, 避免 plate 位置不一致时偏移量漂移
             self._tare_offset = -self._get_physical_weight()
         elif fc == CMD.CALIBRATE:
-            pass
+            pass  # 模拟校准
         elif fc == CMD.CLOSE_LID:
+            # 炉盖本就关闭(未经过OPEN_LID) → 新一轮称重, 重置样品阶段
             if not self._lid_open:
                 self._in_sample_phase = False
             self._lid_open = False
@@ -209,26 +225,26 @@ class MockInstrumentSimulator(QObject):
             self._heater_on = False
         elif fc == CMD.SAMPLE_PLATE_STEP:
             self._position = (self._position % 24) + 1
-            self._plate_pos = 1
+            self._plate_pos = 1  # 真实硬件旋转前先抬升样盘
         elif fc == CMD.SAMPLE_PLATE_HOME:
             self._position = 1
             self._plate_pos = 1
         elif fc == CMD.RESET:
-            self._in_sample_phase = False
-            self._weigh_mode = False
-            self._moisture_testing = False
-            print("[MOCK] 收到复位指令 (RESET 0x20), _in_sample_phase=False")
+            print("[MOCK] 收到复位指令 (RESET 0x20)")
         elif fc in (CMD.MOISTURE_TEST_1, CMD.MOISTURE_TEST_2):
             self._moisture_testing = True
             self._weigh_mode = False
-            self._in_sample_phase = True
+            self._in_sample_phase = True  # 启动测试后后续称重均返回样品重量
             mode_name = "鼓风" if fc == CMD.MOISTURE_TEST_1 else "氮气"
             print("[MOCK] 收到开始测试指令(%s), 进入水分测试模式" % mode_name)
-        elif 0x35 <= fc <= 0x9C:
+        elif fc == CMD.HEAT_OFF:
+            self._heater_on = False
+            print("[MOCK] 加热关闭, 当前温度=%.1f°C" % self._temp)
+        elif 0x35 <= fc <= 0x9C:  # move_to
             pos = fc - 0x34
             if 1 <= pos <= 99:
                 self._position = pos
-                self._plate_pos = 1
+                self._plate_pos = 1  # 真实硬件移动前先抬升样盘
         return b""
 
     def _handle_temp_control(self, data):
@@ -236,10 +252,10 @@ class MockInstrumentSimulator(QObject):
             digits = [data[2], data[3], data[4], data[5]]
             self._target_temp = digits[0] * 1000 + digits[1] * 100 + digits[2] * 10 + digits[3]
             self._heater_on = True
-            print("[MOCK] 收到控温指令: 目标=%dC, 当前=%.1fC, 开始加热" % (
+            print("[MOCK] 收到控温指令: 目标=%d°C, 当前=%.1f°C, 开始加热" % (
                 self._target_temp, self._temp))
 
-    # ===== 手动控制接口 =====
+    # ===== 手动控制接口（测试用） =====
 
     def set_temperature(self, temp_c):
         self._temp = float(temp_c)
@@ -251,6 +267,7 @@ class MockInstrumentSimulator(QObject):
         self._online = 1 if online else 0
 
     def press_button(self):
+        """模拟仪器按键按下（上行帧中 btn=1）"""
         self._btn = 1
 
     def get_temperature(self):
@@ -285,127 +302,142 @@ class MockInstrumentSimulator(QObject):
         }
 
 
-class SimSerialAdapter(QObject):
-    """模拟串口适配器 — QSerialPort 兼容接口 + readyRead 信号
+class SimSerialAdapter:
+    """模拟串口适配器 — 对接 MockInstrumentSimulator 与 SerialManager
 
-    实现与 QSerialPort/MockSerial 兼容的接口，通过 readyRead 信号
-    与 SerialManager._on_ready_read 对接。
-
-    线程安全: _read_buf 由 threading.Lock 保护，
-    因为 QThread worker 和主线程 QTimer 会并发访问。
+    实现与 MockSerial 兼容的接口，使 SerialManager(mock=True) 可以透明使用。
     """
-    readyRead = Signal()
 
     def __init__(self, simulator, serial_mgr=None):
-        super().__init__()
         self._sim = simulator
-        self._serial_mgr = serial_mgr
+        self._serial_mgr = serial_mgr  # 用于更新上行时间戳
         self.is_open = True
         self.port = "MOCK"
         self._read_buf = bytearray()
+        self._handshake_resp = bytearray()  # 握手指令专用响应通道
         import threading
         self._lock = threading.Lock()
-        self._drain_timer = QTimer(self)
-        self._drain_timer.timeout.connect(self._drain_and_emit)
-        self._drain_timer.start(200)
 
-    def bytesAvailable(self):
-        """非阻塞返回可读字节数 — 必须先 drain 再返回"""
+    @property
+    def in_waiting(self):
+        """非阻塞检查: 将模拟器上行帧转移到读缓存后返回可读字节数"""
         self._drain_uplink()
-        with self._lock:
-            return len(self._read_buf)
-
-    def isOpen(self):
-        return self.is_open
-
-    def portName(self):
-        return self.port
+        return len(self._read_buf) + len(self._handshake_resp)
 
     def write(self, data):
         if not data:
             return 0
         n = len(data)
+        # 握手指令走专用通道, 确保 read_all 一定能读到 OK
+        if self._sim._is_handshake(data):
+            resp = self._sim.feed_cmd(data)
+            self._handshake_resp.extend(b'\x4F\x4B\x01\x45\x4E\x44')
+            return n
+        # 其他指令交给模拟器处理
         resp = self._sim.feed_cmd(data)
         if resp:
-            with self._lock:
-                self._read_buf.extend(resp)
+            self._read_buf.extend(resp)
         return n
 
     def flush(self):
         pass
 
-    def readAll(self):
+    def read(self, size=1):
+        # 握手指令响应优先
+        if len(self._handshake_resp) > 0:
+            hk = bytes(self._handshake_resp)
+            self._handshake_resp.clear()
+            self._read_buf = hk + self._read_buf
         self._drain_uplink()
-        with self._lock:
-            data = bytes(self._read_buf)
-            self._read_buf.clear()
+        if len(self._read_buf) == 0:
+            return b""
+        n = min(size, len(self._read_buf))
+        data = bytes(self._read_buf[:n])
+        self._read_buf = self._read_buf[n:]
         return data
 
-    def read(self, size=1):
+    def read_all(self):
+        # 握手指令响应优先返回
+        hk = bytes(self._handshake_resp)
+        self._handshake_resp.clear()
         self._drain_uplink()
-        with self._lock:
-            if len(self._read_buf) == 0:
-                return b""
-            n = min(size, len(self._read_buf))
-            data = bytes(self._read_buf[:n])
-            self._read_buf = self._read_buf[n:]
+        data = hk + bytes(self._read_buf)
+        self._read_buf.clear()
         return data
 
     def readline(self):
         self._drain_uplink()
-        with self._lock:
-            idx = self._read_buf.find(b"\n")
-            if idx < 0:
-                return b""
-            line = bytes(self._read_buf[:idx + 1])
-            self._read_buf = self._read_buf[idx + 1:]
+        idx = self._read_buf.find(b"\n")
+        if idx < 0:
+            return b""
+        line = bytes(self._read_buf[:idx + 1])
+        self._read_buf = self._read_buf[idx + 1:]
         return line
 
     def read_until(self, expected=b"\n", size=256):
         self._drain_uplink()
-        with self._lock:
-            idx = self._read_buf.find(expected)
-            if idx < 0:
-                data = bytes(self._read_buf[:min(size, len(self._read_buf))])
-                self._read_buf = self._read_buf[len(data):]
-                return data
-            end = idx + len(expected)
-            data = bytes(self._read_buf[:end])
-            self._read_buf = self._read_buf[end:]
+        idx = self._read_buf.find(expected)
+        if idx < 0:
+            data = bytes(self._read_buf[:min(size, len(self._read_buf))])
+            self._read_buf = self._read_buf[len(data):]
+            return data
+        end = idx + len(expected)
+        data = bytes(self._read_buf[:end])
+        self._read_buf = self._read_buf[end:]
         return data
+
+    def _drain_uplink(self):
+        """将模拟器上行缓存转移到读缓存(线程安全)"""
+        with self._sim._uplink_lock:
+            up = bytes(self._sim._uplink_buf)
+            self._sim._uplink_buf.clear()
+            if up:
+                self._read_buf.extend(up)
+                if self._serial_mgr:
+                    self._serial_mgr.update_uplink_time()
+            rp = bytes(self._sim._resp_buf)
+            self._sim._resp_buf.clear()
+            if rp:
+                self._read_buf.extend(rp)
+
+    def reset_input_buffer(self):
+        with self._lock:
+            self._read_buf.clear()
+            self._handshake_resp.clear()
+            # 不清空 _uplink_buf / _resp_buf：模拟器数据是有效上行帧，
+            # 不是真实串口的残留垃圾。清空会导致 send_cmd_with_uplink_check
+            # 永远等不到响应，陷入无限重试死循环。
+
+    def reset_output_buffer(self):
+        self._read_buf.clear()
 
     def close(self):
         self.is_open = False
         self._sim.stop()
 
-    def _drain_uplink(self):
-        """将模拟器上行缓存转移到读缓存（线程安全）"""
-        with self._sim._buf_lock:
-            up = bytes(self._sim._uplink_buf)
-            self._sim._uplink_buf.clear()
-            rp = bytes(self._sim._resp_buf)
-            self._sim._resp_buf.clear()
-        if up:
-            with self._lock:
-                self._read_buf.extend(up)
-            if self._serial_mgr:
-                self._serial_mgr.update_uplink_time()
-        if rp:
-            with self._lock:
-                self._read_buf.extend(rp)
+    # MockSerial 兼容接口
+    def add_response(self, cmd_prefix, resp_bytes):
+        pass  # 模拟器已内部处理
 
-    def _drain_and_emit(self):
-        """定时转移数据，有数据时发射 readyRead"""
+    def set_uplink_frame(self, **kwargs):
+        pass  # 模拟器已自动生成
+
+    def set_uplink_callback(self, callback):
+        pass
+
+    def process_incoming(self):
         self._drain_uplink()
-        with self._lock:
-            has_data = len(self._read_buf) > 0
-        if has_data:
-            self.readyRead.emit()
 
 
 # ===== 工厂函数 =====
 
 def create_mock_serial_manager():
+    """创建已连接模拟仪器的 SerialManager 实例
+
+    返回:
+        SerialManager: is_connected=True, 已启动后台模拟
+        MockInstrumentSimulator: 模拟器实例（可手动控制温度/重量等）
+    """
     from serial_comm import SerialManager
 
     sim = MockInstrumentSimulator()
@@ -414,8 +446,7 @@ def create_mock_serial_manager():
 
     mgr = SerialManager(parent=None, use_mock=False)
     mgr._serial = SimSerialAdapter(sim, serial_mgr=mgr)
-    mgr._serial.readyRead.connect(mgr._on_ready_read)
-    mgr._mock = False
+    mgr._mock = False  # 避开 mock 检查
     mgr._config.port = "MOCK"
 
     return mgr, sim
@@ -423,9 +454,6 @@ def create_mock_serial_manager():
 
 # ===== 独立测试入口 =====
 if __name__ == "__main__":
-    from PySide2.QtWidgets import QApplication
-    app = QApplication.instance() or QApplication([])
-
     sim = MockInstrumentSimulator()
     sim.set_online(True)
     sim.start()
@@ -434,16 +462,18 @@ if __name__ == "__main__":
     print("初始:  temp=%.1fC  weight=%.4fg  online=%d" % (
         sim.get_temperature(), sim.get_weight(), 1))
 
+    # 模拟控温
     from protocol_layer import CommandBuilder
     cmd = CommandBuilder.build_temp_control(105)
     sim.feed_cmd(cmd)
-    print("发送控温 105C")
+    print("发送控温 105°C")
 
     for i in range(10):
         time.sleep(0.5)
         print("  t=%.1fs  temp=%.1fC  heating=%s  target=%d" % (
             i * 0.5, sim.get_temperature(), sim.is_heating(), sim.get_target_temp()))
 
+    # 模拟发送天平数据
     sim.set_weight(25.0235)
     cmd2 = CommandBuilder.build_send_weight(1.0019)
     sim.feed_cmd(cmd2)

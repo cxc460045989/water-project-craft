@@ -235,6 +235,8 @@ class HardwareCheckDialog(QDialog):
     def _on_serial_data(self, data):
         if not self._buf:
             return
+        if self._mgr:
+            self._mgr.update_uplink_time()
         frames = self._buf.feed(data)
         for f in frames:
             self.temp_digit.setText("%.1f" % f["temperature"])
@@ -303,6 +305,10 @@ class HardwareCheckDialog(QDialog):
         """直接发送指令，不重试（硬件检测场景每次点击只应执行一次）"""
         if not self._mgr or not self._mgr.is_connected:
             return
+        try:
+            self._mgr.flush_input()
+        except Exception:
+            pass
         n = self._mgr.send(cmd)
         if n > 0:
             logger.info("[HARDWARE][" + (self._mgr.port_name if self._mgr else "?") + "] " + label + " 已发送")

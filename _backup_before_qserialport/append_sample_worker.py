@@ -62,6 +62,7 @@ class AppendSampleWorker(QThread):
 
     def run(self):
         self._running = True
+        self._serial.set_bypass_poll(True)
         try:
             self._do_tare()
         except Exception as e:
@@ -74,16 +75,11 @@ class AppendSampleWorker(QThread):
                 pass
         finally:
             self._running = False
+            self._serial.set_bypass_poll(False)
 
     def stop(self):
         _log("手动终止")
         self._running = False
-        # 结束称量时发送复位指令
-        if self._serial and self._serial.is_connected:
-            from protocol_layer import CommandBuilder, CMD
-            cmd = CommandBuilder.build_command(CMD.RESET)
-            self._serial.send(cmd)
-            _log("结束称量, 发送仪器复位")
 
     # ================================================================
     # 阶段1: 单坩埚称量
@@ -92,6 +88,7 @@ class AppendSampleWorker(QThread):
     def _do_tare(self):
         """单坩埚称量: 移位→清零→下降→读数（全程开盖，不抬样盘，不发送校正值）"""
         _log("坩埚称量: row=%d name=%s" % (self._row, self._name))
+        self._send_cmd(CMD.RESET, "仪器复位")
         position = self._row + 1
 
         # 1. 通知 UI 进入坩埚称量显示
@@ -125,14 +122,14 @@ class AppendSampleWorker(QThread):
         _log("发送: %s code=0x%02X %s" % (desc, func_code, cmd.hex()))
         ok = send_cmd_with_uplink_check(self._serial, cmd, desc)
         if not ok:
-            _log("指令发送失败(已重试3次): %s" % desc)
+            self.sig_error.emit("指令发送失败: " + desc)
 
     def _send_move_to(self, position):
         cmd = CommandBuilder.build_move_to(position)
         _log("样盘移动: pos=%d %s" % (position, cmd.hex()))
         ok = send_cmd_with_uplink_check(self._serial, cmd, "移动到%d号位" % position)
         if not ok:
-            _log("样盘移动指令发送失败(已重试3次): pos=%d" % position)
+            self.sig_error.emit("样盘移动指令发送失败 pos=%d" % position)
 
     # ================================================================
     # 上行帧读取
@@ -141,7 +138,7 @@ class AppendSampleWorker(QThread):
     def _read_uplink_weight(self):
         """主动读取串口天平数据（对齐 weigh_controller._read_uplink_weight: 每次新建 UplinkBuffer）"""
         try:
-            raw = self._serial.readAll()
+            raw = self._serial.read_all()
         except Exception:
             return 0.0, False
         if not raw:
@@ -149,12 +146,24 @@ class AppendSampleWorker(QThread):
         from protocol_layer import UplinkBuffer, FrameParser
         buf = UplinkBuffer()
         frames = buf.feed(raw)
+        if frames:
+            self._serial.update_uplink_time()
         if not frames:
             return 0.0, False
         f = frames[-1]
         if f is not None:
-            return f["weight"], True
-        return 0.0, False
+            self._serial.update_uplink_time()
+            raw_str = f.get("raw_str", "?")
+            # 数值变化立即打印; 不变时按 1s 节流打印(与正式模式日志密度一致)
+            changed = not hasattr(self, "_last_uplink_raw") or self._last_uplink_raw != raw_str
+            throttled = (not changed and
+                         getattr(self, "_last_uplink_log_time", 0) + 1.0 < time.time())
+            if changed or throttled:
+                _log("上行帧: raw=%s 重量=%.4fg 温度=%.1fC 联机=%s 按键=%s" %
+                     (raw_str, f["weight"], f["temperature"], f["online"], f["btn_pressed"]))
+                self._last_uplink_raw = raw_str
+                self._last_uplink_log_time = time.time()
+        return f["weight"], True
 
     # ================================================================
     # 等待稳定 + 读数

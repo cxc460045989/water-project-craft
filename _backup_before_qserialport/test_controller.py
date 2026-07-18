@@ -196,7 +196,8 @@ class TestWorker(QObject):
         self._patrol_timer = QTimer(self)
         self._patrol_timer.timeout.connect(self._on_patrol_tick)
 
-        # readyRead 驱动上行帧处理 (替代原 200ms QTimer 轮询)
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self._on_tick)
         self._tick_interval_ms = 200
         self._hold_timer = QTimer(self)
         self._hold_timer.timeout.connect(self._on_hold_tick)
@@ -214,8 +215,9 @@ class TestWorker(QObject):
         self._paused = False
         self._phase = ""
         self._initial_weights = {}
-        # 连接 readyRead/data_received 信号驱动上行帧处理
-        self._serial.data_received.connect(self._on_uplink_data)
+        # 测试期间禁用主轮询, 避免与 _on_tick 竞争串口数据(mock模式关键)
+        self._serial.set_bypass_poll(True)
+        self._timer.start(self._tick_interval_ms)
         # retest=1: 复检样品重量 → 初始称重; retest=0: 跳过 → 直接进分析水分支
         if self.cfg.retest:
             self._transition(_Phase.INITIAL_WEIGH)
@@ -227,12 +229,10 @@ class TestWorker(QObject):
         _log("测试停止")
         self._running = False
         self._paused = False
+        self._timer.stop()
         self._hold_timer.stop()
         self._patrol_timer.stop()
-        try:
-            self._serial.data_received.disconnect(self._on_uplink_data)
-        except Exception:
-            pass
+        self._serial.set_bypass_poll(False)
         self._safe_send_cmd(CMD.HEAT_OFF, "关闭加热")
         self._safe_send_cmd(CMD.FAN_OFF, "关鼓风")
         self._safe_send_cmd(CMD.N2_OFF, "关氮气")
@@ -582,13 +582,11 @@ class TestWorker(QObject):
     def _step_done(self):
         """测试结束: 关闭所有输出"""
         _log("步骤9: 测试结束")
+        self._timer.stop()
         self._hold_timer.stop()
         self._patrol_timer.stop()
         self._running = False
-        try:
-            self._serial.data_received.disconnect(self._on_uplink_data)
-        except Exception:
-            pass
+        self._serial.set_bypass_poll(False)
 
         self._safe_send_cmd(CMD.HEAT_OFF, "关闭加热")
         self._safe_send_cmd(CMD.FAN_OFF, "关鼓风")
@@ -835,25 +833,35 @@ class TestWorker(QObject):
                                                        "恒温: 开始测试(%s)" % ("鼓风" if self._dry_cfg_fan else "氮气"))
 
 
-    # ========= 上行帧处理(readyRead 驱动) =========
+    # ========= 主循环(200ms) =========
 
-    def _on_uplink_data(self, data):
-        """readyRead 驱动: 每次串口有数据时自动触发, 解析上行帧并更新温度/重量"""
+    def _on_tick(self):
+        """200ms主循环: 非阻塞读取上行帧, 实时更新温度UI"""
         if not self._running or self._paused:
             return
-        if not data:
+        # 非阻塞读取: 仅在串口缓冲区有数据时才读, 避免 read_all 空等1s阻塞事件循环
+        if self._serial.in_waiting == 0:
             return
-        self._last_uplink_time = time.time()
-        frames = self._uplink_buf.feed(data)
-        for f in frames:
-            self._current_temp = f["temperature"]
-            self._current_weight = f["weight"]
-            self.sig_temp_update.emit(f["temperature"])
+        try:
+            raw = self._serial.read_all()
+        except Exception:
+            raw = b""
+        if raw:
+            self._last_uplink_time = time.time()
+            frames = self._uplink_buf.feed(raw)
+            for f in frames:
+                self._current_temp = f["temperature"]
+                self._current_weight = f["weight"]
+                self.sig_temp_update.emit(f["temperature"])
+                # 上行帧日志: 每条都打印, 完整观测串口数据
+                _log("上行帧: %s  temp=%.1f weight=%.4f online=%d btn=%d" % (
+                    f["raw_str"], f["temperature"], f["weight"],
+                    f["online"], f["btn_pressed"]))
 
-        # TEMP_PATROL状态下每次收到数据也检查温度(快速响应)
+        # TEMP_PATROL状态下200ms tick也检查温度(快速响应)
         if self._dry_sub_state == _DrySubState.TEMP_PATROL:
             if self._current_temp >= (self._temp_target - 5):
-                _log("温度达标 %.1fC(readyRead检测)" % self._current_temp)
+                _log("温度达标 %.1f℃(200ms tick检测)" % self._current_temp)
                 self._patrol_timer.stop()
                 self._start_hold()
 
@@ -1032,7 +1040,7 @@ class TestWorker(QObject):
             temp_callback=lambda t: (setattr(self, '_current_temp', t), self.sig_temp_update.emit(t)),
         )
         if not ok:
-            _log("指令发送失败(已重试3次): %s" % desc)
+            self.sig_error.emit("指令发送失败: " + desc)
             return
         _log("指令已发送: %s" % desc)
         if callback:
@@ -1044,15 +1052,13 @@ class TestWorker(QObject):
         self._send_cmd_with_uplink_check(cmd, desc, callback)
 
     def _drain_uplink_for_ui(self):
-        """补读串口上行帧, 更新温度/重量到UI(非阻塞)"""
-        try:
-            avail = self._serial.bytesAvailable
-        except Exception:
-            avail = 0
-        if avail == 0:
+        """补读串口上行帧, 更新温度/重量到UI(非阻塞)
+        send_cmd_with_uplink_check 内部会消耗上行帧, 补读一帧确保UI不丢数据
+        """
+        if self._serial.in_waiting == 0:
             return
         try:
-            raw = self._serial.readAll()
+            raw = self._serial.read_all()
         except Exception:
             return
         if not raw:
@@ -1067,13 +1073,9 @@ class TestWorker(QObject):
         if not self._serial or not self._serial.is_connected:
             return
         try:
-            # 非阻塞消费缓冲区已有数据, 转发温度到UI
-            try:
-                avail = self._serial.bytesAvailable
-            except Exception:
-                avail = 0
-            if avail > 0:
-                raw = self._serial.readAll()
+            # 非阻塞消费缓冲区已有数据, 转发温度到UI(避免 flush_input 丢弃帧)
+            if self._serial.in_waiting > 0:
+                raw = self._serial.read_all()
                 if raw:
                     buf = UplinkBuffer()
                     for f in buf.feed(raw):
@@ -1117,14 +1119,10 @@ class TestWorker(QObject):
 
     def _read_current_weight(self):
         """读取当前天平重量(非阻塞)"""
-        try:
-            avail = self._serial.bytesAvailable
-        except Exception:
-            avail = 0
-        if avail == 0:
+        if self._serial.in_waiting == 0:
             return None
         try:
-            raw = self._serial.readAll()
+            raw = self._serial.read_all()
         except Exception:
             return None
         if not raw:
