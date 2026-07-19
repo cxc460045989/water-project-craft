@@ -396,7 +396,7 @@ class MoistureAnalyzer(QMainWindow):
         self.progress_widget.setVisible(True)
         lo.addWidget(self.progress_widget)
         lo.addSpacing(12)
-        # ---- 串口管理器 (Mock 模式) ----
+        # ---- 串口管理器 ----
         self._uplink_buf = UplinkBuffer()
         self.serial_mgr = SerialManager(parent=self, use_mock=False)
         self.serial_mgr.connected.connect(self._on_serial_connected)
@@ -404,22 +404,92 @@ class MoistureAnalyzer(QMainWindow):
         self.serial_mgr.data_received.connect(self._on_serial_data)
         self.serial_mgr.error_occurred.connect(self._on_serial_error)
         self._port_name = ""
+        self._mock_sim = None  # MockInstrumentSimulator 实例 (仅 mock 模式)
 
-        # ---- ????? ----
+        # ---- 统一适配器选择 (WATER_MODE 环境变量) ----
+        self._init_serial_adapter()
+
+        # ---- 测试流程控制器 ----
         from test_controller import TestController
         self.test_ctrl = TestController(self.serial_mgr, self)
         self._init_test_signals()
         # ---- 启动时自动打开串口 ----
-        from db import load_params
-        _p = load_params()
-        _com = _p.get("com_port", "COM1") or "COM1"
-        if _com:
-            logger.info("[SERIAL] 启动时自动打开串口: " + str(_com))
-            self.serial_mgr.open(port=_com)
-            # readyRead 信号驱动, 无需手动轮询
+        # mock/replay 模式已在 _init_serial_adapter 中完成连接，跳过 open()
+        if self.serial_mgr._serial is not None and getattr(self.serial_mgr._serial, 'port', '') in ("MOCK", "REPLAY"):
+            logger.info("[SERIAL] 适配器已注入 (port=%s), 跳过 open()" % self.serial_mgr._serial.port)
         else:
-            logger.info("[SERIAL] 未配置串口号，启动后不自动打开")
+            from db import load_params
+            _p = load_params()
+            _com = _p.get("com_port", "COM1") or "COM1"
+            if _com:
+                logger.info("[SERIAL] 启动时自动打开串口: " + str(_com))
+                self.serial_mgr.open(port=_com)
+                # readyRead 信号驱动, 无需手动轮询
+            else:
+                logger.info("[SERIAL] 未配置串口号，启动后不自动打开")
     # ---- 串口回调 ----
+    def _init_serial_adapter(self):
+        """根据 WATER_MODE 环境变量初始化串口适配器
+
+        WATER_MODE 取值:
+            (未设置/空)  → 真实硬件模式 (QSerialPort)
+            "mock"       → Mock 模拟器模式 (MockInstrumentSimulator)
+            "replay"     → 回放模式 (HardwareReplayer + 录制文件)
+            "record"     → 真实硬件 + 录制模式
+        """
+        import os as _os
+        mode = _os.environ.get("WATER_MODE", "").strip().lower()
+        if not mode:
+            return  # 默认真实硬件
+
+        if mode == "mock":
+            self._init_mock_adapter()
+        elif mode == "replay":
+            self._init_replay_adapter()
+        elif mode == "record":
+            self._init_record_adapter()
+        else:
+            logger.info("[ADAPTER] 未知 WATER_MODE=%s, 使用真实硬件" % mode)
+
+    def _init_mock_adapter(self):
+        """Mock 模式: 注入 MockInstrumentSimulator"""
+        _os = __import__("os")
+        _os.environ.setdefault("WATER_SPEED_MODE", "1")
+        from mock_instrument import MockInstrumentSimulator, SimSerialAdapter
+        self._mock_sim = MockInstrumentSimulator()
+        self._mock_sim.set_online(True)
+        self._mock_sim.start()
+        self.serial_mgr._serial = SimSerialAdapter(self._mock_sim, serial_mgr=self.serial_mgr)
+        self.serial_mgr._serial.readyRead.connect(self.serial_mgr._on_ready_read)
+        self.serial_mgr._config.port = "MOCK"
+        self.serial_mgr._connected_emitted = True
+        self.serial_mgr.connected.emit()
+        logger.info("[ADAPTER] Mock 模拟器已注入, 端口=MOCK")
+
+    def _init_replay_adapter(self):
+        """回放模式: 用录制文件替代硬件"""
+        _os = __import__("os")
+        _os.environ.setdefault("WATER_SPEED_MODE", "1")
+        from hardware_replayer import create_replay_adapter_from_env
+        adapter, replayer = create_replay_adapter_from_env(serial_mgr=self.serial_mgr)
+        if adapter is None:
+            logger.info("[ADAPTER] 回放文件未指定(WATER_REPLAY), 降级为真实硬件")
+            return
+        self.serial_mgr._serial = adapter
+        self.serial_mgr._serial.readyRead.connect(self.serial_mgr._on_ready_read)
+        self.serial_mgr._config.port = "REPLAY"
+        self.serial_mgr._connected_emitted = True
+        self.serial_mgr.connected.emit()
+        logger.info("[ADAPTER] 回放模式已启动")
+
+    def _init_record_adapter(self):
+        """录制模式: 真实硬件 + 流量录制"""
+        from hardware_recorder import create_recorder_from_env
+        recorder = create_recorder_from_env()
+        if recorder:
+            self.serial_mgr.set_recorder(recorder)
+            logger.info("[ADAPTER] 流量录制已启用")
+
     def _on_serial_connected(self):
         import datetime
         ts = datetime.datetime.now().strftime("%H:%M:%S.%f")[:-3]

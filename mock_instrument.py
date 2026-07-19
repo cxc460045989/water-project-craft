@@ -108,6 +108,13 @@ class MockInstrumentSimulator(QObject):
 
         self._weight = self._compute_weight()
 
+        # 故障注入: 温度噪声/传感器故障
+        self._temp = self._apply_faults_to_temp(self._temp)
+
+        # 故障注入: 上行帧丢帧
+        if self._apply_faults_to_uplink():
+            return  # 丢弃本帧
+
         raw_temp = int(round(self._temp * 10))
         raw_weight = int(round(self._weight * 10000)) + 3000000
         raw_temp = max(0, min(9999, raw_temp))
@@ -147,7 +154,10 @@ class MockInstrumentSimulator(QObject):
         return physical
 
     def _compute_weight(self):
-        return self._get_physical_weight() + self._tare_offset
+        physical = self._get_physical_weight()
+        # 故障注入: 天平噪声/漂移
+        physical = self._apply_faults_to_weight(physical)
+        return physical + self._tare_offset
 
     # ===== 下行指令处理 =====
 
@@ -155,10 +165,15 @@ class MockInstrumentSimulator(QObject):
         if not data:
             return b""
         if self._is_handshake(data):
-            self._resp_buf.extend(b'\x4F\x4B\x01\x45\x4E\x44')
-            return b'\x4F\x4B\x01\x45\x4E\x44'
+            resp = b'\x4F\x4B\x01\x45\x4E\x44'
+            resp = self._apply_faults_to_ack(resp)
+            self._resp_buf.extend(resp)
+            return resp
         if len(data) >= 4 and data[0] == 0x5A and data[-1] == 0x44:
-            return self._handle_4byte_cmd(data)
+            resp = self._handle_4byte_cmd(data)
+            if resp:
+                resp = self._apply_faults_to_ack(resp)
+            return resp
         return b""
 
     def _is_handshake(self, data):
@@ -302,6 +317,223 @@ class MockInstrumentSimulator(QObject):
             "weigh_mode": self._weigh_mode,
             "moisture_testing": self._moisture_testing,
         }
+
+    # ===== 协议自检 =====
+
+    def validate_protocol(self):
+        """协议一致性自检 — 验证所有指令的 ACK 响应与协议文档一致
+
+        Returns:
+            dict: {"passed": [...], "failed": [...], "warnings": [...]}
+        """
+        results = {"passed": [], "failed": [], "warnings": []}
+        import copy
+        saved_state = {
+            "_in_sample_phase": self._in_sample_phase,
+            "_lid_open": self._lid_open,
+            "_plate_pos": self._plate_pos,
+            "_position": self._position,
+            "_heater_on": self._heater_on,
+            "_target_temp": self._target_temp,
+            "_moisture_testing": self._moisture_testing,
+        }
+
+        # 所有 4 字节指令 (5A 4D <fc> 44)
+        test_cases = [
+            (0x01, "HANDSHAKE(已废弃)", True),    # 握手始终返回 OK
+            (0x07, "BEEPER_1S", True),
+            (0x13, "SAMPLE_PLATE_ROTATE", True),
+            (0x14, "SAMPLE_PLATE_UP", True),
+            (0x15, "SAMPLE_PLATE_DOWN", True),
+            (0x16, "TARE", True),
+            (0x17, "CALIBRATE", True),
+            (0x18, "CLOSE_LID", True),
+            (0x19, "OPEN_LID", True),
+            (0x12, "ENTER_WEIGH_MODE", True),
+            (0x11, "EXIT_WEIGH_MODE", True),
+            (0x10, "ALL_OFF", True),
+            (0x1B, "HEAT_OFF", True),
+            (0x1C, "FAN_ON", True),
+            (0x1D, "FAN_OFF", True),
+            (0x1E, "N2_ON", True),
+            (0x1F, "N2_OFF", True),
+            (0x20, "RESET", True),
+            (0x21, "BEEPER_ON", True),
+            (0x22, "BEEPER_OFF", True),
+            (0x29, "SAMPLE_PLATE_STEP", True),
+            (0x30, "SAMPLE_PLATE_HOME", True),
+            (0x32, "GAS_ALL_OFF", True),
+            (0x33, "MOISTURE_TEST_1", True),
+            (0x34, "MOISTURE_TEST_2", True),
+            (0x0E, "O2_ON", True),
+            (0x0F, "O2_OFF", True),
+        ]
+
+        for fc, name, _ in test_cases:
+            cmd = bytes([0x5A, 0x4D, fc, 0x44])
+            resp = self.feed_cmd(cmd)
+            expected = bytes([0x4F, 0x4B, fc, 0x45, 0x4E, 0x44])
+            if resp == expected:
+                results["passed"].append(name)
+            else:
+                results["failed"].append({
+                    "name": name,
+                    "fc": "0x%02X" % fc,
+                    "expected": expected.hex(),
+                    "got": resp.hex() if resp else "None",
+                })
+            # 恢复状态
+            self._in_sample_phase = False
+            self._lid_open = False
+
+        # 控温指令
+        temp_cmd = bytes([0x5A, 0x57, 1, 0, 5, 0x44])
+        resp = self.feed_cmd(temp_cmd)
+        expected_temp = bytes([0x4F, 0x4B, 1, 0, 5, 0x4E, 0x44])
+        if resp == expected_temp:
+            results["passed"].append("TEMP_CONTROL(105C)")
+        else:
+            results["failed"].append({
+                "name": "TEMP_CONTROL(105C)",
+                "expected": expected_temp.hex(),
+                "got": resp.hex() if resp else "None",
+            })
+
+        # 发送重量
+        weight_cmd = bytes([0x5A, 0x58, 0, 0, 1, 0, 0, 0, 0, 0x44])
+        resp = self.feed_cmd(weight_cmd)
+        expected_weight = bytes([0x4F, 0x4B, 0, 0, 1, 0x4E, 0x44])
+        if resp == expected_weight:
+            results["passed"].append("SEND_WEIGHT")
+        else:
+            results["failed"].append({
+                "name": "SEND_WEIGHT",
+                "expected": expected_weight.hex(),
+                "got": resp.hex() if resp else "None",
+            })
+
+        # 移动样位
+        move_cmd = bytes([0x5A, 0x4D, 0x35, 0x44])  # 0x35 - 0x34 = 1, pos 1
+        resp = self.feed_cmd(move_cmd)
+        expected_move = bytes([0x4F, 0x4B, 0x35, 0x45, 0x4E, 0x44])
+        if resp == expected_move:
+            results["passed"].append("MOVE_TO(1)")
+        else:
+            results["failed"].append({
+                "name": "MOVE_TO(1)",
+                "expected": expected_move.hex(),
+                "got": resp.hex() if resp else "None",
+            })
+
+        # 检查状态恢复
+        for k, v in saved_state.items():
+            setattr(self, k, v)
+
+        total = len(results["passed"]) + len(results["failed"])
+        results["summary"] = "%d/%d passed" % (len(results["passed"]), total)
+        return results
+
+    @staticmethod
+    def print_protocol_report(results):
+        """打印协议自检报告"""
+        print("\n" + "=" * 60)
+        print("  协议一致性自检报告: %s" % results["summary"])
+        print("=" * 60)
+        if results["failed"]:
+            print("\n  [FAILED] %d 项:" % len(results["failed"]))
+            for f in results["failed"]:
+                print("    - %s: expected=%s got=%s" % (
+                    f["name"], f["expected"], f["got"]))
+        print("  [PASSED] %d 项" % len(results["passed"]))
+        if results.get("warnings"):
+            for w in results["warnings"]:
+                print("  [WARN] %s" % w)
+        print()
+
+    # ===== 故障注入 =====
+
+    def enable_fault_injection(self, config=None):
+        """启用故障注入模式
+
+        config 支持的故障类型:
+            drop_uplink_rate: 0.0~1.0  上行帧丢帧概率 (默认 0.0)
+            ack_delay_ms: 0~5000       ACK 应答延迟 (默认 0)
+            uplink_delay_ms: 0~5000    上行帧延迟 (默认 0)
+            temp_noise: 0~10.0         温度读数噪声幅度 (默认 0)
+            weight_drift: 0~1.0        天平读数漂移 (默认 0)
+            temp_sensor_fault: bool    温度传感器故障 (默认 False, 读数锁定为 999.9)
+            motor_stall: bool          电机卡死 (默认 False, 样位不移动)
+        """
+        self._fault_config = {
+            "drop_uplink_rate": 0.0,
+            "ack_delay_ms": 0,
+            "uplink_delay_ms": 0,
+            "temp_noise": 0.0,
+            "weight_drift": 0.0,
+            "temp_sensor_fault": False,
+            "motor_stall": False,
+        }
+        if config:
+            self._fault_config.update(config)
+        if not hasattr(self, '_fault_stats'):
+            self._fault_stats = {"dropped_frames": 0, "delayed_acks": 0}
+        print("[MOCK] 故障注入已启用: %s" % self._fault_config)
+
+    def disable_fault_injection(self):
+        """禁用故障注入"""
+        self._fault_config = None
+        print("[MOCK] 故障注入已禁用")
+
+    @property
+    def fault_stats(self):
+        return getattr(self, '_fault_stats', {"dropped_frames": 0, "delayed_acks": 0})
+
+    def _apply_faults_to_uplink(self):
+        """对上行帧应用故障（丢帧/延迟）"""
+        cfg = getattr(self, '_fault_config', None)
+        if cfg is None:
+            return False  # 不丢帧
+        import random
+        if random.random() < cfg["drop_uplink_rate"]:
+            self._fault_stats["dropped_frames"] += 1
+            return True  # 丢帧
+        return False
+
+    def _apply_faults_to_ack(self, resp):
+        """对 ACK 响应应用故障（延迟）"""
+        cfg = getattr(self, '_fault_config', None)
+        if cfg is None:
+            return resp
+        if cfg["ack_delay_ms"] > 0:
+            self._fault_stats["delayed_acks"] += 1
+            import time as _time
+            _time.sleep(cfg["ack_delay_ms"] / 1000.0)
+        return resp
+
+    def _apply_faults_to_weight(self, physical):
+        """对天平读数应用故障（噪声/漂移）"""
+        cfg = getattr(self, '_fault_config', None)
+        if cfg is None:
+            return physical
+        import random
+        result = physical
+        if cfg["weight_drift"] > 0:
+            result += cfg["weight_drift"] * (self._dry_read_count or 0)
+        if cfg["temp_noise"] > 0:
+            result += random.uniform(-cfg["temp_noise"] / 1000.0, cfg["temp_noise"] / 1000.0)
+        return result
+
+    def _apply_faults_to_temp(self, temp):
+        """对温度读数应用故障"""
+        cfg = getattr(self, '_fault_config', None)
+        if cfg is None:
+            return temp
+        if cfg["temp_sensor_fault"]:
+            return 999.9
+        import random
+        if cfg["temp_noise"] > 0:
+            return temp + random.uniform(-cfg["temp_noise"], cfg["temp_noise"])
+        return temp
 
 
 class SimSerialAdapter(QObject):

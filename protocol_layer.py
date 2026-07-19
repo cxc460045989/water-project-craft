@@ -154,7 +154,10 @@ class UplinkBuffer:
                 break
             potential_end = end_idx + 3
             if potential_end < FrameParser.FRAME_LEN:
-                break
+                # "END" 标记出现在非上行帧数据中 (如 ACK 响应 "OK3END")
+                # 跳过这段假标记, 继续搜索真正的上行帧
+                self._buffer = self._buffer[potential_end:]
+                continue
             candidate = bytes(self._buffer[:FrameParser.FRAME_LEN])
             parsed = FrameParser.parse_uplink(candidate)
             if parsed is not None:

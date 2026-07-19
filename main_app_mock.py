@@ -6,53 +6,25 @@
     python main_app_mock.py
 
 与真实版差异:
-    - 串口后端替换为 MockInstrumentSimulator（智能仪器模拟器）
-    - 温度/天平数据由模拟器自动生成
+    - 通过 WATER_MODE=mock 环境变量启用统一 Mock 适配器
+    - 温度/天平数据由 MockInstrumentSimulator 自动生成
     - 所有按钮功能正常可用（开始测试、称量、追加样品等）
     - 数据库、报表打印完全一致
 """
 
 import sys, os
+os.environ['WATER_MODE'] = 'mock'
 os.environ['WATER_SPEED_MODE'] = '1'  # 加速模式: 30s→3s, 分钟→秒
-
-
-# ===== 启动模拟器 =====
-from mock_instrument import MockInstrumentSimulator
-_mock_sim = MockInstrumentSimulator()
-_mock_sim.set_online(True)
-_mock_sim.start()
 
 print("=" * 60)
 print("  微机全自动水分测定仪 — Mock 演示版")
+print("  统一适配器模式 (WATER_MODE=mock)")
 print("  仪器模拟器已启动，无需连接硬件")
 print("=" * 60)
 print("  模拟器初始状态: 温度 25C, 天平 0g, 联机")
 print("  所有功能可正常使用，数据存入 data.db")
 print("=" * 60)
 print()
-
-
-# ===== 注入 Mock 补丁到 SerialManager.open =====
-# 在 MoistureAnalyzer 创建之前完成注入
-import serial_comm
-
-def _mock_open(self, port=None, baudrate=None, config=None):
-    """注入版本: SerialManager.open 强制走模拟通道"""
-    self._mock = False
-    if self._serial is None:
-        from mock_instrument import SimSerialAdapter
-        self._serial = SimSerialAdapter(_mock_sim, serial_mgr=self)
-        # SimSerialAdapter readyRead → SerialManager._on_ready_read → data_received
-        self._serial.readyRead.connect(self._on_ready_read)
-    self._config.port = "MOCK"
-    if getattr(self, "_connected_emitted", False):
-        return True
-    self._connected_emitted = True
-    self.connected.emit()
-    return True
-
-serial_comm.SerialManager.open = _mock_open
-print("[MOCK] SerialManager.open 已注入 Mock 补丁")
 
 
 # ===== 模拟器控制台 =====
@@ -197,10 +169,13 @@ import main_app
 app = QApplication.instance() or QApplication(sys.argv)
 app.setStyle("Fusion")
 
-panel = MockControlPanel(_mock_sim)
-panel.show()
-
 w = main_app.MoistureAnalyzer()
+
+# Mock 控制面板 (挂在主窗口的 _mock_sim 上)
+if w._mock_sim is not None:
+    panel = MockControlPanel(w._mock_sim)
+    panel.show()
+
 w.show()
 
 sys.exit(app.exec_())

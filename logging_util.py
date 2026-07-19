@@ -24,6 +24,7 @@ _FILE_TAGS = frozenset([
     "[BATCH_WEIGH]", "[CONST_WEIGHT]",
     "[TEMP_CTRL]", "[PROCESS]",
     "[QUERY]", "[PRINT]",
+    "[TEST]",
 ])
 
 def _ensure_log_dir():

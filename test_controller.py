@@ -196,10 +196,14 @@ class TestWorker(QObject):
         self._patrol_timer = QTimer(self)
         self._patrol_timer.timeout.connect(self._on_patrol_tick)
 
-        # readyRead 驱动上行帧处理 (替代原 200ms QTimer 轮询)
+        # 恒温保持定时器 (1s)
         self._tick_interval_ms = 200
         self._hold_timer = QTimer(self)
         self._hold_timer.timeout.connect(self._on_hold_tick)
+
+        # 0.5s 上行帧补读定时器 (保底机制, data_received 信号的补充)
+        self._uplink_poll_timer = QTimer(self)
+        self._uplink_poll_timer.timeout.connect(self._on_uplink_poll)
 
     def set_table(self, table_widget):
         """设置主表格引用(用于获取校正坩埚名等)"""
@@ -226,6 +230,8 @@ class TestWorker(QObject):
         self._initial_weights = {}
         # 连接 readyRead/data_received 信号驱动上行帧处理
         self._serial.data_received.connect(self._on_uplink_data)
+        # 启动 0.5s 补读定时器 (保底, 防止 data_received 延迟/丢失)
+        self._uplink_poll_timer.start(500)
         # retest=1: 复检样品重量 → 初始称重; retest=0: 跳过 → 直接进分析水分支
         if self.cfg.retest:
             self._transition(_Phase.INITIAL_WEIGH)
@@ -239,6 +245,7 @@ class TestWorker(QObject):
         self._paused = False
         self._hold_timer.stop()
         self._patrol_timer.stop()
+        self._uplink_poll_timer.stop()
         try:
             self._serial.data_received.disconnect(self._on_uplink_data)
         except Exception:
@@ -495,17 +502,19 @@ class TestWorker(QObject):
         _log("烘干启动: mode=%s cycle=%d fan=%s temp=%d℃" %
              (mode, self._dry_cycle + 1, fan, temp))
 
-        if fan:
-            self._send_cmd_code_with_uplink_check(CMD.FAN_ON, "开鼓风")
-
         self.sig_status_msg.emit("%s 第%d轮烘干, 目标%d℃" %
                                   (mode, self._dry_cycle + 1, temp))
+
+        # 先发开始测试指令 (鼓风/氮气), 再发控温指令
+        test_cmd = CMD.MOISTURE_TEST_1 if fan else CMD.MOISTURE_TEST_2
+        self._safe_send_cmd(test_cmd,
+                            "开始测试(%s)" % ("鼓风" if fan else "氮气"))
 
         self._cmd_is_temp = False
         cmd = CommandBuilder.build_temp_control(temp)
         self._serial.send(cmd)
         _log("烘干启动: 发送控温 %d℃ %s" % (temp, cmd.hex()))
-        self._send_start_test_and_patrol()
+        self._start_temp_patrol()
 
     def _start_temp_patrol(self):
         """开始控温: 10s间隔, 交替发控温/开始测试指令"""
@@ -523,6 +532,9 @@ class TestWorker(QObject):
             return
         if self._dry_sub_state != _DrySubState.TEMP_PATROL:
             return
+
+        # 先排空上行帧, 确保 _current_temp 为最新值
+        self._drain_uplink_for_ui()
 
         self._cmd_is_temp = not self._cmd_is_temp
         if self._cmd_is_temp:
@@ -562,15 +574,6 @@ class TestWorker(QObject):
             self.sig_status_msg.emit("恒温保持 %d:00" % hold_min)
             _log("恒温开始: %d 分钟 (目标=%d℃ 剩余>60s交替发指令, ≤30s关气)" % (hold_min, self._temp_target))
         self._hold_timer.start(1000)
-
-    def _send_start_test_and_patrol(self):
-        """发开始测试指令(直接发，不等上行), 然后开始温度巡检"""
-        if not self._running:
-            return
-        test_cmd = CMD.MOISTURE_TEST_1 if self._dry_cfg_fan else CMD.MOISTURE_TEST_2
-        self._safe_send_cmd(test_cmd,
-                            "开始测试(%s)" % ("鼓风" if self._dry_cfg_fan else "氮气"))
-        self._start_temp_patrol()
 
     def _start_hold_end_weigh(self):
         """恒温结束, 进入称重阶段"""
@@ -892,11 +895,30 @@ class TestWorker(QObject):
             self._current_temp = f["temperature"]
             self._current_weight = f["weight"]
             self.sig_temp_update.emit(f["temperature"])
+            self._log_uplink_throttled(f)
 
         # TEMP_PATROL状态下每次收到数据也检查温度(快速响应)
         if self._dry_sub_state == _DrySubState.TEMP_PATROL:
             if self._current_temp >= (self._temp_target - 5):
                 _log("温度达标 %.1fC(readyRead检测)" % self._current_temp)
+                self._patrol_timer.stop()
+                self._start_hold()
+
+    def _on_uplink_poll(self):
+        """0.5s 定时补读: 非阻塞读取串口缓冲区 → 解析上行帧 → 更新温度/重量
+
+        作为 data_received 信号的保底补充:
+        - data_received 在 bypass 模式期间被抑制
+        - 事件循环繁忙时 readyRead 可能延迟
+        - 本方法确保每 0.5s 至少有一次上行数据读取机会
+        """
+        if not self._running or self._paused:
+            return
+        self._drain_uplink_for_ui()
+        # TEMP_PATROL 状态下每次补读也检查温度 (快速响应, 加速升温达标检测)
+        if self._dry_sub_state == _DrySubState.TEMP_PATROL:
+            if self._current_temp >= (self._temp_target - 5):
+                _log("温度达标 %.1fC(补读检测), 转入恒温保持" % self._current_temp)
                 self._patrol_timer.stop()
                 self._start_hold()
 
@@ -1089,6 +1111,16 @@ class TestWorker(QObject):
             self._current_temp = f["temperature"]
             self._current_weight = f["weight"]
             self.sig_temp_update.emit(f["temperature"])
+            self._log_uplink_throttled(f)
+
+    def _log_uplink_throttled(self, f):
+        """节流: 每秒最多打印一条上行帧日志"""
+        import time as _time
+        _now = _time.time()
+        if _now - getattr(self, '_last_uplink_log_ts', 0) >= 1.0:
+            self._last_uplink_log_ts = _now
+            _log("上行帧: %s  temp=%.1f weight=%.4f online=%d btn=%d" % (
+                f["raw_str"], f["temperature"], f["weight"], f["online"], f["btn_pressed"]))
 
     def _safe_send_cmd(self, func_code, desc):
         """安全发送指令(不阻塞，允许失败)"""

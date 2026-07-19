@@ -116,6 +116,7 @@ class SerialManager(QObject):
         self._uplink_watchdog_interval = 3.0
         self._bypass_refcount = 0      # 引用计数 >0 时 readyRead 数据存入 _sync_buf
         self._sync_buf = bytearray()    # 同步指令期间的响应数据缓冲区
+        self._recorder = None           # HardwareRecorder 实例 (None=不录制)
 
     @property
     def _bypass_readyread(self):
@@ -238,6 +239,14 @@ class SerialManager(QObject):
 
     # ---- 收发 ----
 
+    def set_recorder(self, recorder):
+        """设置流量录制器 (None 停止录制)"""
+        self._recorder = recorder
+
+    @property
+    def recorder(self):
+        return self._recorder
+
     def send(self, data):
         if not self.is_connected:
             self.error_occurred.emit("串口未连接，无法发送")
@@ -246,6 +255,8 @@ class SerialManager(QObject):
             n = self._serial.write(data)
             if hasattr(self._serial, 'waitForBytesWritten'):
                 self._serial.waitForBytesWritten(100)
+            if self._recorder is not None:
+                self._recorder.record_downlink(data)
             return n
         except Exception as e:
             self.error_occurred.emit("发送失败: " + str(e))
@@ -275,6 +286,8 @@ class SerialManager(QObject):
         if not data:
             return
         self._last_uplink_time = time.time()
+        if self._recorder is not None:
+            self._recorder.record_uplink(data)
         if self._bypass_readyread:
             self._sync_buf.extend(data)
         else:
