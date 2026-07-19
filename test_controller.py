@@ -980,26 +980,26 @@ class TestWorker(QObject):
         # ---- 1. 先称校正坩埚(1号位) ----
         if not self._running:
             return
-        self.sig_status_msg.emit("%s 第%d轮: 正在称重1号样品(校正坩埚)重量：..." % (
-            mode_name, self._dry_cycle))
-        QApplication.processEvents()
         crucible_tare = self._get_tare_from_db(0)
-        self._weigh_single(0, "校正坩埚", crucible_tare, desc="校正坩埚(%s)" % col_name,
-                           progress_cb=lambda w: self.sig_status_msg.emit(
-                               "正在称重1号样品(校正坩埚)重量：%.4fg" % w))
-        _log("校正坩埚 row=0 tare=%.4f" % crucible_tare)
+        crucible_dry = self._weigh_single(0, "校正坩埚", crucible_tare, desc="校正坩埚(%s)" % col_name,
+                                          progress_cb=lambda w: self.sig_status_msg.emit(
+                                              "正在称重1号样品重量：%.4fg" % w))
+        if crucible_dry is not None:
+            self.sig_weigh_result.emit(0, crucible_dry, self._phase)
+            self._save_weigh_result(0, "校正坩埚", "", 0.0,
+                                    int(round(crucible_dry * 10000)) + 1000000,
+                                    crucible_dry, crucible_tare, self._tare_offset, is_first=is_first)
+        _log("校正坩埚 row=0 tare=%.4f dry=%.4f" % (crucible_tare, crucible_dry or 0.0))
 
         # ---- 2. 称量所有样品 ----
         for idx, (row_idx, name, mode_str, sample_weight) in enumerate(self._samples):
             if not self._running:
                 return
-            self.sig_status_msg.emit("正在称重%d号样品(%s)重量：..." % (row_idx + 1, name))
-            QApplication.processEvents()
             tare = self._get_tare_from_db(row_idx)
             dry_weight = self._weigh_single(row_idx, name, tare, desc=col_name,
-                                            progress_cb=lambda w, r=row_idx, n=name:
+                                            progress_cb=lambda w, r=row_idx:
                                             self.sig_status_msg.emit(
-                                                "正在称重%d号样品(%s)重量：%.4fg" % (r + 1, n, w)))
+                                                "正在称重%d号样品重量：%.4fg" % (r + 1, w)))
             if dry_weight is None:
                 continue
             mid_val = int(round(dry_weight * 10000)) + 1000000

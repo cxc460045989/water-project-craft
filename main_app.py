@@ -687,8 +687,14 @@ class MoistureAnalyzer(QMainWindow):
         """关闭试验参数后刷新表格行数"""
         sc = load_params().get("sample_count", 24) or 24
         self._table.setRowCount(int(sc))
+        # 断开 cellChanged，防止 _fill_table 逐行写"分析水"覆盖 DB 中已保存的模式
+        try:
+            self._table.cellChanged.disconnect(self._on_cell_changed)
+        except Exception:
+            pass
         self._fill_table(self._table)
         self._restore_samples_from_db(self._table)
+        self._table.cellChanged.connect(self._on_cell_changed)
 
     def _save_hy_current(self, text):
         """保存当前选中的化验员到 SQLite"""
