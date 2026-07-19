@@ -69,11 +69,10 @@ def test_basic_send_and_receive():
     ok = send_cmd_with_uplink_check(mgr, cmd, desc="正在关闭炉盖")
     elapsed = time.time() - t0
 
+    # 验证上行帧被正确解析（数据在 _on_ready_read 时已处理）
     check("send_cmd_with_uplink_check 返回 True", ok is True)
     check("响应时间 < 100ms", elapsed < 0.1, f"实际 {elapsed*1000:.0f}ms")
-    check("bypass 标志已恢复", mgr._bypass_readyread is False)
-    # sync_buf 已在函数内部消费清空, 返回后为空是正常行为
-    # 上行帧已由日志确认为: S0850319000010END temp=85.0 weight=19.0000
+    check("bypass 引用计数已归零", mgr._bypass_refcount == 0)
     check("日志确认收到上行帧(temp=85.0 weight=19.0000)", ok is True)
 
     mgr.close()
@@ -178,23 +177,20 @@ def test_temp_callback():
 
 
 def test_timeout_simulation():
-    """测试 6: 超时/异常情况 — bypass 标志恢复"""
+    """测试 6: 超时/异常情况 — bypass 引用计数恢复"""
     print("\n" + "=" * 60)
-    print("测试 6: 超时/异常 — bypass 在 finally 中正确恢复")
+    print("测试 6: 超时/异常 — bypass 引用计数在 finally 中正确恢复")
     print("=" * 60)
 
     mgr = SerialManager(use_mock=True)
     mgr.open(port="MOCK")
 
-    # 模拟中途异常退出: 手动设 bypass, 验证 finally 能恢复
-    # (不实际等待 60s 超时 — 计时器逻辑已由其他测试覆盖)
-    mgr._bypass_readyread = True
+    mgr._enter_bypass()
     mgr._sync_buf.clear()
+    mgr._leave_bypass()
 
-    # 模拟 send_cmd_with_uplink_check 的 finally 块
-    mgr._bypass_readyread = False
-
-    check("bypass 标志手动恢复后为 False", mgr._bypass_readyread is False)
+    check("bypass 引用计数归零", mgr._bypass_refcount == 0)
+    check("bypass_readyread 为 False", mgr._bypass_readyread is False)
 
     # 再验证: 正常模式下 _on_ready_read 会 emit 信号
     from PySide2.QtCore import QObject
@@ -211,7 +207,7 @@ def test_timeout_simulation():
 
 
 def test_bypass_does_not_block_ui():
-    """测试 7: bypass 期间 _on_ready_read 仍正常工作"""
+    """测试 7: bypass 期间 _on_ready_read 仍正常写入 _sync_buf"""
     print("\n" + "=" * 60)
     print("测试 7: bypass 期间 _on_ready_read 仍正常写入 _sync_buf")
     print("=" * 60)
@@ -219,8 +215,7 @@ def test_bypass_does_not_block_ui():
     mgr = SerialManager(use_mock=True)
     mgr.open(port="MOCK")
 
-    # 模拟 bypass 模式下的完整流程
-    mgr._bypass_readyread = True
+    mgr._enter_bypass()
     mgr._sync_buf.clear()
 
     # 写入模拟数据（相当于仪器响应）
@@ -238,7 +233,7 @@ def test_bypass_does_not_block_ui():
         if parsed:
             check("温度正确", abs(parsed["temperature"] - 50.0) < 0.1)
 
-    mgr._bypass_readyread = False
+    mgr._leave_bypass()
     mgr.close()
 
 

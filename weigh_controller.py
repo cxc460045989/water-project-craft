@@ -107,6 +107,8 @@ class WeighWorker(QThread):
                 pass
 
     def run(self):
+        # 整个称重流程保持 bypass: 所有上行帧走 _sync_buf, 不跨线程读 QSerialPort
+        self._serial._enter_bypass()
         try:
             if self._cur_phase == "tare":
                 self._batch_tare()
@@ -132,6 +134,7 @@ class WeighWorker(QThread):
             import traceback
             traceback.print_exc()
         finally:
+            self._serial._leave_bypass()
             self._running = False
             self.sig_finished.emit()
 
@@ -175,9 +178,8 @@ class WeighWorker(QThread):
                 continue
             self._weigh_one_tare(row, name)
         _log("批量坩埚称量完成")
-        self.sig_status_msg.emit("正在上升样盘...")
-        self._send_long_duration_cmd(CMD.SAMPLE_PLATE_UP, desc="样盘上升")
         self._send_cmd(CMD.OPEN_LID, desc="打开炉盖")
+        self._send_cmd(CMD.SAMPLE_PLATE_UP, desc="样盘上升")
         self._send_cmd(CMD.BEEPER_1S, desc="蜂鸣提示")
         self.sig_weigh_done.emit("tare")
 
@@ -200,9 +202,8 @@ class WeighWorker(QThread):
                 continue
             self._weigh_one_sample(row, name)
         _log("批量样品称量完成")
-        self.sig_status_msg.emit("正在上升样盘...")
-        self._send_long_duration_cmd(CMD.SAMPLE_PLATE_UP, desc="样盘上升")
         self._send_cmd(CMD.OPEN_LID, desc="打开炉盖")
+        self._send_long_duration_cmd(CMD.SAMPLE_PLATE_UP, desc="样盘上升")
         self._send_cmd(CMD.BEEPER_1S, desc="蜂鸣提示")
         self.sig_weigh_done.emit("sample")
 
@@ -238,8 +239,9 @@ class WeighWorker(QThread):
                 while self._running and (time.time() - _start) < 5.0:
                     w, ok = self._read_uplink_weight()
                     if ok:
-                        self.sig_real_time_sample_weight.emit(round(w - self._get_tare_weight(row), 4))
-                    self._sleep(0.5)
+                        net_w = round(w - self._get_tare_weight(row), 4)
+                        self.sig_real_time_sample_weight.emit(net_w)
+                    self._sleep(1.0)
                 self._send_cmd(CMD.BEEPER_1S, desc="蜂鸣提示加样")
                 self._sleep(CMD_INTERVAL_S)
                 tare_weight = self._get_tare_weight(row)
@@ -373,9 +375,8 @@ class WeighWorker(QThread):
             corr_cmd = CommandBuilder.build_send_weight(corr_w)
             send_cmd_with_uplink_check(self._serial, corr_cmd, "坩埚校正值")
             self._sleep(CMD_INTERVAL_S)
-        self.sig_status_msg.emit("正在上升样盘...")
-        self._send_long_duration_cmd(CMD.SAMPLE_PLATE_UP, desc="样盘上升")
         self._send_cmd(CMD.OPEN_LID, desc="打开炉盖")
+        self._send_long_duration_cmd(CMD.SAMPLE_PLATE_UP, desc="样盘上升")
         self._send_cmd(CMD.BEEPER_1S, desc="蜂鸣提示")
         self.sig_weigh_done.emit("tare")
 
@@ -394,9 +395,8 @@ class WeighWorker(QThread):
                 continue
             self._weigh_one_sample(row, name)
         _log("重新称量完成")
-        self.sig_status_msg.emit("正在上升样盘...")
-        self._send_long_duration_cmd(CMD.SAMPLE_PLATE_UP, desc="样盘上升")
         self._send_cmd(CMD.OPEN_LID, desc="打开炉盖")
+        self._send_long_duration_cmd(CMD.SAMPLE_PLATE_UP, desc="样盘上升")
         self._send_cmd(CMD.BEEPER_1S, desc="蜂鸣提示")
         self.sig_weigh_done.emit("sample")
 
@@ -421,7 +421,7 @@ class WeighWorker(QThread):
             if ok:
                 last_weight = round(weight, 4)
             else:
-                self._sleep(0.3)
+                self._sleep(1.0)
                 continue
             # 净重 = 读数 - 坩埚重
             net_weight = round(last_weight - tare_weight, 4)
@@ -436,7 +436,7 @@ class WeighWorker(QThread):
             if self._last_btn_pressed:
                 self._confirm_event.set()
                 break
-            self._sleep(0.3)
+            self._sleep(1.0)
         return last_weight
 
     def _wait_confirm_with_display(self, tare_weight):
@@ -455,7 +455,7 @@ class WeighWorker(QThread):
                 self._send_weight_fire_and_forget(sample)
                 if self._check_instrument_button():
                     return True
-            self._sleep(0.3)
+            self._sleep(1.0)
         return True
 
     def confirm_current_weigh(self):
@@ -487,12 +487,11 @@ class WeighWorker(QThread):
         _log("发送天平数据到仪器: {:.4f}g 指令=".format(weight_g) + cmd.hex())
 
     def _check_instrument_button(self):
-        try:
-            raw = self._serial.readAll()
-        except Exception:
+        """检查上行帧中是否有仪器按键按下事件"""
+        if len(self._serial._sync_buf) == 0:
             return False
-        if not raw:
-            return False
+        raw = bytes(self._serial._sync_buf)
+        self._serial._sync_buf.clear()
         from protocol_layer import UplinkBuffer, FrameParser
         buf = UplinkBuffer()
         frames = buf.feed(raw)
@@ -594,7 +593,7 @@ class WeighWorker(QThread):
                 self.sig_weigh_progress.emit({
                     "phase": phase, "row": row, "name": name, "weight": display_weight
                 })
-            self._sleep(0.5)
+            self._sleep(1.0)
         weight = round(weight, 4)
         _log("称量完成 row={} name={} 重量={:.4f}g".format(row, name, weight))
         return weight
@@ -678,20 +677,19 @@ class WeighWorker(QThread):
         _log("long cmd timeout: " + desc)
 
     def _read_uplink_temp(self):
-        try:
-            raw = self._serial.readAll()
-        except Exception:
+        """从 _sync_buf 读取上行帧，返回 (weight, temperature)"""
+        if len(self._serial._sync_buf) == 0:
             return 0.0, None
-        if not raw:
-            return 0.0, None
+        raw = bytes(self._serial._sync_buf)
+        self._serial._sync_buf.clear()
         from protocol_layer import UplinkBuffer, FrameParser
         buf = UplinkBuffer()
         frames = buf.feed(raw)
         if not frames:
             return 0.0, None
+        self._last_uplink_time = time.time()
         f = frames[-1]
         if f is not None:
-            self._last_uplink_time = time.time()
             return f["weight"], f["temperature"]
         return 0.0, None
 
@@ -716,22 +714,23 @@ class WeighWorker(QThread):
             )
 
     def _read_uplink_weight(self):
-        try:
-            raw = self._serial.readAll()
-        except Exception:
+        """从 _sync_buf 读取上行帧（主线程 _on_ready_read 自动填充），
+        返回 (weight, True) 或 (0.0, False)"""
+        if len(self._serial._sync_buf) == 0:
             return 0.0, False
-        if not raw:
-            return 0.0, False
+        raw = bytes(self._serial._sync_buf)
+        self._serial._sync_buf.clear()
         from protocol_layer import UplinkBuffer, FrameParser
         buf = UplinkBuffer()
         frames = buf.feed(raw)
-        if frames:
-            self._last_uplink_time = time.time()
         if not frames:
             return 0.0, False
+        self._last_uplink_time = time.time()
         f = frames[-1]
         if f is not None:
             self._last_btn_pressed = bool(f.get("btn_pressed", 0))
+        _log("上行帧: %s  temp=%.1f weight=%.4f online=%d btn=%d" % (
+            f["raw_str"], f["temperature"], f["weight"], f["online"], f["btn_pressed"]))
         return f["weight"], True
 
     def _get_tare_weight(self, row):

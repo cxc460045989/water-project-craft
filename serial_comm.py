@@ -114,8 +114,21 @@ class SerialManager(QObject):
         self._last_uplink_time = 0.0
         self._uplink_watchdog = None
         self._uplink_watchdog_interval = 3.0
-        self._bypass_readyread = False  # True: readyRead 数据存入 _sync_buf 而非 emit 信号
+        self._bypass_refcount = 0      # 引用计数 >0 时 readyRead 数据存入 _sync_buf
         self._sync_buf = bytearray()    # 同步指令期间的响应数据缓冲区
+
+    @property
+    def _bypass_readyread(self):
+        return self._bypass_refcount > 0
+
+    def _enter_bypass(self):
+        """进入旁路模式（引用计数+1）"""
+        self._bypass_refcount += 1
+
+    def _leave_bypass(self):
+        """退出旁路模式（引用计数-1）"""
+        if self._bypass_refcount > 0:
+            self._bypass_refcount -= 1
 
     @staticmethod
     def scan_ports():
@@ -233,6 +246,11 @@ class SerialManager(QObject):
             n = self._serial.write(data)
             if hasattr(self._serial, 'waitForBytesWritten'):
                 self._serial.waitForBytesWritten(100)
+            # Mock + 旁路模式: write() 内已同步生成响应到 _out_buf，
+            # 但 readyRead 跨线程时 Qt 走 QueuedConnection 会延迟。
+            # 直接同步读取，确保 _sync_buf 在 send() 返回时已有数据。
+            if self._mock and self._bypass_readyread:
+                self._on_ready_read()
             return n
         except Exception as e:
             self.error_occurred.emit("发送失败: " + str(e))

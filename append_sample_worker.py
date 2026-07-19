@@ -62,6 +62,8 @@ class AppendSampleWorker(QThread):
 
     def run(self):
         self._running = True
+        # 整个称重流程保持 bypass: 上行帧走 _sync_buf, 不跨线程读 QSerialPort
+        self._serial._enter_bypass()
         try:
             self._do_tare()
         except Exception as e:
@@ -73,6 +75,7 @@ class AppendSampleWorker(QThread):
             except Exception:
                 pass
         finally:
+            self._serial._leave_bypass()
             self._running = False
 
     def stop(self):
@@ -139,13 +142,12 @@ class AppendSampleWorker(QThread):
     # ================================================================
 
     def _read_uplink_weight(self):
-        """主动读取串口天平数据（对齐 weigh_controller._read_uplink_weight: 每次新建 UplinkBuffer）"""
-        try:
-            raw = self._serial.readAll()
-        except Exception:
+        """从 _sync_buf 读取上行帧（主线程 _on_ready_read 自动填充），
+        返回 (weight, True) 或 (0.0, False)"""
+        if len(self._serial._sync_buf) == 0:
             return 0.0, False
-        if not raw:
-            return 0.0, False
+        raw = bytes(self._serial._sync_buf)
+        self._serial._sync_buf.clear()
         from protocol_layer import UplinkBuffer, FrameParser
         buf = UplinkBuffer()
         frames = buf.feed(raw)
@@ -153,6 +155,8 @@ class AppendSampleWorker(QThread):
             return 0.0, False
         f = frames[-1]
         if f is not None:
+            _log("上行帧: %s  temp=%.1f weight=%.4f online=%d btn=%d" % (
+                f["raw_str"], f["temperature"], f["weight"], f["online"], f["btn_pressed"]))
             return f["weight"], True
         return 0.0, False
 
@@ -183,7 +187,7 @@ class AppendSampleWorker(QThread):
                     "phase": "tare", "row": self._row,
                     "name": self._name, "weight": display
                 })
-            self._sleep(0.5)
+            self._sleep(1.0)
         # 5s 结束后取一次最新读数作为最终坩埚重
         final_w, final_ok = self._read_uplink_weight()
         if final_ok:

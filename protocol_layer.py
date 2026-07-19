@@ -301,12 +301,9 @@ class CmdSender(QObject):
 def send_cmd_with_uplink_check(serial_mgr, cmd_bytes, desc="", temp_callback=None):
     """发指令 → 等仪器上行帧响应，持续重试直至成功或60秒超时
 
-    发送后轮询 _sync_buf（由主线程 _on_ready_read 正常接收上行帧填充）。
-    仪器约每1秒发一帧上行帧，每次等待最多 1.2s 覆盖一个完整周期。
-    收到上行帧 → 成功返回；超时 → 重发，总超时 60s。
-
-    注意: 不使用 waitForReadyRead，因为它会吞掉 readyRead 信号，
-    导致 _on_ready_read 槽函数不被调用，_sync_buf 始终为空。
+    核心原则: 只清一次缓冲区（首次发送前），重试过程不再清理。
+    这样即使某次轮询窗口错过了响应，响应仍留在 _sync_buf 中，
+    下次重试时可直接命中，无需等待新帧。
 
     参数:
         serial_mgr: SerialManager 实例
@@ -317,27 +314,23 @@ def send_cmd_with_uplink_check(serial_mgr, cmd_bytes, desc="", temp_callback=Non
     import time as _time
 
     TOTAL_TIMEOUT_S = 60.0    # 总超时: 1分钟
-    FRAME_WAIT_S = 1.2        # 等待下一个上行帧 (仪器 ~1s/帧, 留余量)
-    POLL_INTERVAL_S = 0.05    # 轮询间隔: 50ms
-    RETRY_INTERVAL_S = 0.1    # 重试间隔
+    FRAME_WAIT_S = 0.1        # 等待上行帧 (仪器响应几十ms, 100ms足够)
+    POLL_INTERVAL_S = 0.01    # 轮询间隔: 10ms
+    RETRY_INTERVAL_S = 0.05   # 重试间隔
     overall_start = _time.time()
     attempt = 0
 
     # 激活旁路: readyRead 数据 → _sync_buf, 不发 signal
-    serial_mgr._bypass_readyread = True
+    serial_mgr._enter_bypass()
     try:
-        # 排空旧数据
+        # ★ 唯一一次清除: 排空旧数据，只执行一次
         serial_mgr._sync_buf.clear()
 
         while True:
-            # 总超时检查
             elapsed = _time.time() - overall_start
             if elapsed > TOTAL_TIMEOUT_S:
                 logger.warning("[CMD] 发送超时(60s无响应): %s (共%d次尝试)" % (desc, attempt))
                 return False
-
-            # 清空缓冲区，准备接收本次响应
-            serial_mgr._sync_buf.clear()
 
             n = serial_mgr.send(cmd_bytes)
             if n == 0:
@@ -351,8 +344,8 @@ def send_cmd_with_uplink_check(serial_mgr, cmd_bytes, desc="", temp_callback=Non
                 logger.info("[CMD] 已发送: %s | %s" % (desc, cmd_bytes.hex()))
             attempt += 1
 
-            # 轮询 _sync_buf 等待下一个上行帧 (仪器 ~1s/帧)
-            # 不使用 waitForReadyRead — 它会吞掉 readyRead 信号!
+            # 轮询 _sync_buf: 只要缓冲区有数据就视为仪器响应
+            # 重试时不清 buffer，上次错过的响应仍可被命中
             wait_start = _time.time()
             resp_received = False
             while (_time.time() - wait_start) < FRAME_WAIT_S:
@@ -383,10 +376,10 @@ def send_cmd_with_uplink_check(serial_mgr, cmd_bytes, desc="", temp_callback=Non
                 logger.info("[CMD] 发送成功: %s (第%d次尝试, 耗时%.1fs)" % (desc, attempt, elapsed))
                 return True
 
-            # 1.2s 内无上行帧，短暂等待后重试
+            # 500ms 内无上行帧，短暂等待后重试（不清缓冲区）
             _time.sleep(RETRY_INTERVAL_S)
     finally:
-        serial_mgr._bypass_readyread = False
+        serial_mgr._leave_bypass()
 
 
 # ============================================================
