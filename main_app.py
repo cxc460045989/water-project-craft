@@ -541,6 +541,22 @@ class MoistureAnalyzer(QMainWindow):
         item.setText("{:.4f}".format(value))
         logger.info("[TEST] 复检回填 row=%d col=%d value=%.4f" % (row_idx, col, value))
 
+    def _on_append_tare_backfill(self, row, weight):
+        """追加样品坩埚重回填 — 在主线程安全操作 UI"""
+        if self._table is None:
+            return
+        from PySide2.QtWidgets import QTableWidgetItem
+        from PySide2.QtCore import Qt
+        item = self._table.item(row, 2)
+        if item is None:
+            item = QTableWidgetItem("%.4f" % weight)
+            item.setTextAlignment(Qt.AlignCenter)
+            item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+            self._table.setItem(row, 2, item)
+        else:
+            item.setText("%.4f" % weight)
+        logger.info("[APPEND] 坩埚重回填 row=%d weight=%.4f" % (row, weight))
+
     def _on_append_finished(self, success, msg):
         """追加样品完成回调"""
         self.btn_append.setEnabled(True)
@@ -1495,6 +1511,8 @@ class MoistureAnalyzer(QMainWindow):
             self._append_worker.sig_progress.connect(on_phase1_progress)
             self._append_worker.sig_done.connect(on_phase1_done)
             self._append_worker.sig_error.connect(on_phase1_error)
+            # 跨线程安全: 在主线程写表格
+            self._append_worker.sig_tare_backfill.connect(self._on_append_tare_backfill)
             dlg.rejected.connect(self._append_worker.stop)
 
             # ============================================================

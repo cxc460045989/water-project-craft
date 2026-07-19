@@ -301,6 +301,7 @@ class CmdSender(QObject):
 def _build_expected_response(cmd_bytes):
     """根据下行指令构建预期应答
     4字节指令: 5A 4D <fc> 44  →  4F 4B <fc> 45 4E 44
+    固定4字节: 5A 4D <fc> 44  →  4F 4B <fc> 45 4E 44
     控温指令:  5A 57 <d1> <d2> <d3> <d4> 44  →  4F 4B <d1> <d2> <d3> 4E 44
     发送重量:  5A 58 <d1>...<d8> 44  →  4F 4B <d1> <d2> <d3> 4E 44
     无法识别:  返回 None，不做校验
@@ -310,7 +311,7 @@ def _build_expected_response(cmd_bytes):
     if cmd_bytes[1] == 0x4D and len(cmd_bytes) == 4:
         return bytes([0x4F, 0x4B, cmd_bytes[2], 0x45, 0x4E, 0x44])
     if cmd_bytes[1] in (0x57, 0x58) and len(cmd_bytes) >= 6:
-        return bytes([0x4F, 0x4B, cmd_bytes[2], cmd_bytes[3], cmd_bytes[4], 0x4E, 0x44])
+        return bytes([0x4F, 0x4B, cmd_bytes[2], cmd_bytes[3], cmd_bytes[4], 0x45, 0x4E, 0x44])
     return None
 
 
@@ -338,18 +339,24 @@ def send_cmd_with_uplink_check(serial_mgr, cmd_bytes, desc="", temp_callback=Non
         temp_callback: 可选, callable(temperature_float)
     """
     import time as _time
+    import threading as _threading
     from PySide2.QtWidgets import QApplication as _QApp
 
+    # 判断当前是否在主线程（主线程才需要 processEvents 让 Mock 上行帧生成）
+    _is_main_thread = (_threading.current_thread() is _threading.main_thread())
+
     def _poll_sleep(seconds):
-        """带事件处理的睡眠: 防止 Mock 模式主线程死锁
-        QTimer 需要事件循环才能触发, 纯 time.sleep 会阻塞事件循环
-        导致 Mock 仪器上行帧永远无法生成。
-        """
-        deadline = _time.time() + seconds
-        while _time.time() < deadline:
-            _QApp.processEvents()
-            remaining = deadline - _time.time()
-            _time.sleep(min(0.01, remaining))
+        """线程安全的睡眠: 主线程用 processEvents 保持事件循环，
+        工作线程用纯 time.sleep（不能跨线程调 processEvents）"""
+        if _is_main_thread:
+            deadline = _time.time() + seconds
+            while _time.time() < deadline:
+                _QApp.processEvents()
+                remaining = deadline - _time.time()
+                if remaining > 0:
+                    _time.sleep(min(0.01, remaining))
+        else:
+            _time.sleep(seconds)
 
     TOTAL_TIMEOUT_S = 60.0      # 总超时: 1分钟
     RESP_TIMEOUT_S = 0.2        # 发指令后等待 ACK 的超时: 200ms

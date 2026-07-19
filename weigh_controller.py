@@ -41,6 +41,8 @@ class WeighWorker(QThread):
     sig_weight_out_of_range = Signal(str, float, float, float)
     sig_status_msg = Signal(str)  # 使用 BlockingQueuedConnection 确保 UI 在串口指令前刷新
     sig_real_time_sample_weight = Signal(float)
+    # 跨线程安全回填信号: (row, col, weight, phase, extra_dict)
+    sig_backfill = Signal(int, int, float, str, object)
 
     def __init__(self, serial_mgr, parent=None):
         super().__init__(parent)
@@ -48,16 +50,12 @@ class WeighWorker(QThread):
         self._running = False
         self._valid_rows = []
         self._cur_phase = ""
-        self._backfill_cb = None
         self._table_ref = None
         self._confirm_event = None
         self._last_uplink_time = time.time()  # 最近上行帧时间戳
         self._last_btn_pressed = False          # 最近上行帧仪器按键状态
         self._reweigh_rows = None               # 重新称量模式: set of row indices
         self._skip_plate_ops = False            # 追加样品模式: 跳过样盘升降（样盘已在低位）
-
-    def set_backfill(self, cb):
-        self._backfill_cb = cb
 
     def set_table(self, table_widget):
         self._table_ref = table_widget
@@ -98,6 +96,12 @@ class WeighWorker(QThread):
         self._running = True
         self.start()
 
+    def run_retest(self, valid_rows):
+        self._valid_rows = list(valid_rows)
+        self._cur_phase = "retest"
+        self._running = True
+        self.start()
+
     def stop(self):
         self._running = False
         if self._confirm_event:
@@ -122,6 +126,8 @@ class WeighWorker(QThread):
                 self._reweigh_tare()
             elif self._cur_phase == "reweigh_sample":
                 self._reweigh_sample()
+            elif self._cur_phase == "retest":
+                self._retest_weigh()
         except ConnectionError as e:
             # 通讯异常: 先复位仪器，再通知 UI
             _log("通讯异常, 发送复位指令: " + str(e))
@@ -200,12 +206,53 @@ class WeighWorker(QThread):
                 return
             if not name.strip():
                 continue
+            if row == 0:
+                continue  # row 0 已在上面 _weigh_one_sample_correction 处理
             self._weigh_one_sample(row, name)
         _log("批量样品称量完成")
         self._send_cmd(CMD.OPEN_LID, desc="打开炉盖")
         self._send_long_duration_cmd(CMD.SAMPLE_PLATE_UP, desc="样盘上升")
         self._send_cmd(CMD.BEEPER_1S, desc="蜂鸣提示")
         self.sig_weigh_done.emit("sample")
+
+    # ===== 复检称重（开始测试专用）=====
+    def _retest_weigh(self):
+        """复检称重: 关盖 → 逐位称样品 → 不开盖不抬盘
+
+        与 _batch_sample 的区别:
+        - 无 RESET（仪器已在工作状态）
+        - 无坩埚校正值发送
+        - 无 ENTER_WEIGH_MODE（已在称重模式）
+        - 完成后不开盖、不抬样盘（后续控温需要）
+        - 称量时序与 _weigh_one_sample 完全一致
+        """
+        _log("复检称重开始, 共 %d 个样品" % len(self._valid_rows))
+
+        # 步骤1: 关炉盖 + 逐秒倒计时（与批量称重一致）
+        self._send_long_duration_cmd(CMD.CLOSE_LID, desc="正在关闭炉盖")
+
+        # 步骤2: 称量1号坩埚样品（表格第0行），样品重取天平读数
+        if self._running:
+            corr_name = "1号坩埚"
+            if self._table_ref:
+                item = self._table_ref.item(0, 0)
+                if item and item.text().strip():
+                    corr_name = item.text().strip()
+            self._weigh_one_sample_correction(0, corr_name)
+
+        # 步骤3: 逐位称样品（与批量称重完全一致的时序）
+        for row, name, mode in self._valid_rows:
+            if not self._running:
+                return
+            if not name.strip():
+                continue
+            if row == 0:
+                continue  # row 0 已在上面 _weigh_one_sample_correction 处理
+            self._weigh_one_sample(row, name)
+
+        _log("复检称重完成, 共 %d 个样品" % len(self._valid_rows))
+        # 不开盖、不抬样盘 → 直接通知完成
+        self.sig_weigh_done.emit("retest")
 
     # ===== 单个称样品 =====
     def _single_sample(self):
@@ -274,9 +321,8 @@ class WeighWorker(QThread):
                     continue
                 self.sig_single_weigh_done.emit(row, sample_weight)
                 _log("单个称量完成 row=" + str(row) + " weight=" + str(sample_weight))
-                if self._backfill_cb:
-                    self._backfill_cb(row, SAMPLE_TARGET_COL, sample_weight, "sample",
-                                      total_weight=total_weight, tare_weight=tare_weight)
+                self.sig_backfill.emit(row, SAMPLE_TARGET_COL, sample_weight, "sample",
+                                      {"total_weight": total_weight, "tare_weight": tare_weight})
                 break
         _log("单个称量全部完成")
         self.sig_status_msg.emit("正在上升样盘...")
@@ -356,9 +402,8 @@ class WeighWorker(QThread):
                     # 合格: 保存数据
                     self.sig_single_weigh_done.emit(row, sample_weight)
                     _log("单独称量完成 row=" + str(row) + " weight=" + str(sample_weight))
-                    if self._backfill_cb:
-                        self._backfill_cb(row, SAMPLE_TARGET_COL, sample_weight, "sample",
-                                          total_weight=weight, tare_weight=tare_weight)
+                    self.sig_backfill.emit(row, SAMPLE_TARGET_COL, sample_weight, "sample",
+                                          {"total_weight": weight, "tare_weight": tare_weight})
                     break  # 进入下一个样位
 
             _log("单独称量全部完成")
@@ -521,8 +566,7 @@ class WeighWorker(QThread):
         _log("天平清零已发送")
         weight = self._wait_descend_and_read(row, name, "tare")
         _log("坩埚重量 row=" + str(row) + " weight=" + str(weight))
-        if self._backfill_cb:
-            self._backfill_cb(row, TARE_TARGET_COL, weight, "tare")
+        self.sig_backfill.emit(row, TARE_TARGET_COL, weight, "tare", {})
 
     # ===== 单个样品称量(批量中使用) =====
     def _weigh_one_sample(self, row, name):
@@ -547,9 +591,8 @@ class WeighWorker(QThread):
             "total_weight": total_weight,
             "tare_weight": tare_weight,
         })
-        if self._backfill_cb:
-            self._backfill_cb(row, SAMPLE_TARGET_COL, sample_weight, "sample",
-                              total_weight=total_weight, tare_weight=tare_weight)
+        self.sig_backfill.emit(row, SAMPLE_TARGET_COL, sample_weight, "sample",
+                              {"total_weight": total_weight, "tare_weight": tare_weight})
 
     def _weigh_one_sample_correction(self, row, name):
         """称量校正坩埚（样品阶段），样品重直接取坩埚重"""
@@ -574,9 +617,8 @@ class WeighWorker(QThread):
             "total_weight": total_weight,
             "tare_weight": tare_weight,
         })
-        if self._backfill_cb:
-            self._backfill_cb(row, SAMPLE_TARGET_COL, sample_weight, "sample",
-                              total_weight=total_weight, tare_weight=tare_weight)
+        self.sig_backfill.emit(row, SAMPLE_TARGET_COL, sample_weight, "sample",
+                              {"total_weight": total_weight, "tare_weight": tare_weight})
 
     # ===== 串口工具方法 =====
     def _wait_descend_and_read(self, row, name, phase, tare_weight=0.0):
@@ -742,14 +784,18 @@ class WeighWorker(QThread):
         return f["weight"], True
 
     def _get_tare_weight(self, row):
-        if self._table_ref is None:
-            return 0.0
-        item = self._table_ref.item(row, TARE_TARGET_COL)
-        if item and item.text().strip():
-            try:
-                return float(item.text().strip())
-            except ValueError:
-                pass
+        """读取坩埚重 — 从 DB 读取，线程安全（不跨线程访问 QTableWidget）"""
+        try:
+            from db import load_experiment_samples, ensure_experiment
+            eid = ensure_experiment()
+            samples = load_experiment_samples(eid)
+            for s in samples:
+                if s.get("row_idx") == row:
+                    tw = s.get("tare_weight")
+                    if tw is not None and tw > 0:
+                        return float(tw)
+        except Exception:
+            pass
         return 0.0
 
     def _get_crucible_correction_weight(self):
@@ -884,9 +930,12 @@ class WeighController(QObject):
         if self._serial_mgr is None:
             self.sig_error.emit("串口管理器未设置，无法启动称量")
             return
+        # 线程安全: 先停止旧 Worker，防止孤儿线程泄漏
+        self._stop_worker()
         self._worker = WeighWorker(self._serial_mgr, self)
         self._worker.set_table(self._table_ref)
-        self._worker.set_backfill(self._on_backfill)
+        # 跨线程安全: sig_backfill 通过 QueuedConnection 在主线程执行 UI 更新
+        self._worker.sig_backfill.connect(self._on_backfill)
         self._worker.sig_weigh_progress.connect(self._on_worker_progress)
         self._worker.sig_weigh_done.connect(self._on_worker_done)
         self._worker.sig_error.connect(self._on_worker_error)
@@ -914,6 +963,38 @@ class WeighController(QObject):
         elif phase == "reweigh_sample":
             self._worker.run_reweigh_phase2(self._valid_rows)
 
+    def _stop_worker(self):
+        """安全停止 Worker 线程 — 等线程自然退出，不强制 terminate
+
+        策略: stop() 设置 _running=False → 线程在下一个循环检查点退出。
+        最坏情况: 线程卡在 send_cmd_with_uplink_check (最长60s超时)，
+        所以 wait 时间设为 65s 兜底。不调用 terminate() 避免仪器状态混乱。
+        """
+        if self._worker is None:
+            return
+        if self._worker.isRunning():
+            _log("等待 Worker 线程自然退出...")
+            self._worker.stop()
+            # 串口指令最长超时 60s，给 65s 兜底
+            if not self._worker.wait(65000):
+                _log("Worker 线程 65s 未退出（仪器可能无响应），请检查串口连接")
+                # 不 terminate，让线程继续运行直到串口超时自然结束
+        self._disconnect_worker_signals()
+        self._worker = None
+
+    def _disconnect_worker_signals(self):
+        """断开 Worker 的所有信号连接，防止信号泄漏"""
+        if self._worker is None:
+            return
+        for sig_name in ['sig_weigh_progress', 'sig_weigh_done', 'sig_error',
+                          'sig_weight_update', 'sig_finished', 'sig_confirm_weigh',
+                          'sig_single_weigh_done', 'sig_weight_out_of_range',
+                          'sig_status_msg', 'sig_real_time_sample_weight']:
+            try:
+                getattr(self._worker, sig_name).disconnect()
+            except Exception:
+                pass
+
     def _on_worker_progress(self, info):
         self.sig_weighing_progress.emit(info)
 
@@ -926,12 +1007,17 @@ class WeighController(QObject):
 
     def _on_worker_finished(self):
         _log("Worker线程结束")
+        # 线程安全: finished 后清理 Worker 引用
+        if self._worker and not self._worker.isRunning():
+            self._worker = None
 
     def _on_status_msg(self, msg):
         """从 Worker 线程 BlockingQueuedConnection 回调，确保 UI 在串口指令前更新"""
         self.sig_status_msg.emit(msg)
 
-    def _on_backfill(self, row, col, weight, phase, **extra):
+    def _on_backfill(self, row, col, weight, phase, extra):
+        """回填回调 — 通过 sig_backfill 信号在主线程执行，安全操作 UI"""
+        extra = extra or {}
         if self._table_ref is None:
             return
         item = self._table_ref.item(row, col)
@@ -951,7 +1037,6 @@ class WeighController(QObject):
         if phase == "sample":
             kwargs = {"sample_weight": weight}
             tare_w = extra.get("tare_weight")
-            # 仅在坩埚重有效(>0)时同步写入, 避免用0覆盖已保存的正确值
             if tare_w and tare_w > 0:
                 kwargs["tare_weight"] = tare_w
             upsert_experiment_sample(eid, row, **kwargs)
@@ -983,9 +1068,7 @@ class WeighController(QObject):
              " weight=" + str(weight) + " phase=" + phase)
 
     def stop(self):
-        if self._worker and self._worker.isRunning():
-            self._worker.stop()
-            self._worker.wait(3000)
+        self._stop_worker()
         # 结束称量时发送复位指令
         if self._serial_mgr and self._serial_mgr.is_connected:
             from protocol_layer import CommandBuilder, CMD
