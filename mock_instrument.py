@@ -212,8 +212,6 @@ class MockInstrumentSimulator(QObject):
         elif fc == CMD.CALIBRATE:
             pass
         elif fc == CMD.CLOSE_LID:
-            if not self._lid_open:
-                self._in_sample_phase = False
             self._lid_open = False
         elif fc == CMD.OPEN_LID:
             self._lid_open = True

@@ -580,9 +580,10 @@ class MoistureAnalyzer(QMainWindow):
         if not self._table or row_idx >= self._table.rowCount():
             return
         # 根据阶段判断写入列: 检查性干燥重量(col4) 或 干燥重量(col5)
+        # 干燥阶段称重结果统一写入 col5（干燥重量）
+        # col4（检查性干燥重量）由恒重检查前移时通过 DB 同步
         if "检查性" in phase or phase == "dry_aw" or phase == "dry_tw":
-            # 首次称重写 col4
-            col = 4
+            col = 5
         else:
             col = 5
         item = self._table.item(row_idx, col)

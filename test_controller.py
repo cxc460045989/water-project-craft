@@ -711,6 +711,9 @@ class TestWorker(QObject):
             batch_no = _dt.datetime.now().strftime("%Y%m%d_%H%M%S")
             test_date = _dt.datetime.now().strftime("%Y-%m-%d")
 
+            _log("finalize: 开始保存结果 exp_id=%d batch=%s samples=%d" %
+                 (eid, batch_no, len(samples)))
+
             if not samples:
                 _log("finalize: 无样品数据，跳过")
                 update_experiment_status(eid, "done")
@@ -774,6 +777,9 @@ class TestWorker(QObject):
                 else:
                     prec = 0.0
 
+                _log("finalize: %s 完成 samples=%d avg=%.*f%% prec=%.*f%% corr=%.*f" %
+                     (mode, len(moistures), decimals, avg_m, decimals, prec, decimals, corr))
+
                 for s in mode_samples:
                     results.append({
                         "实验ID": eid,
@@ -829,6 +835,7 @@ class TestWorker(QObject):
             # 自动开炉盖
             self._send_cmd_code_with_uplink_check(CMD.OPEN_LID, desc="实验完成开炉盖")
             self.sig_status_msg.emit("实验完成, 炉盖已打开")
+            _log("finalize: 全部完成 experiment_results=%d条 experiment_samples已同步 状态=done" % len(results))
 
         except Exception as e:
             _log("finalize 失败: %s" % str(e))
@@ -955,41 +962,42 @@ class TestWorker(QObject):
             self.sig_error.emit("称量失败 row=%d %s" % (row_idx, name))
             return None
 
-        dry = round(stable_weight - tare_weight + self._tare_offset, 4)
+        dry = round(stable_weight - tare_weight - self._tare_offset, 4)
         _log("称重[%s] row=%d 读数=%.4f 坩埚重=%.4f 偏移=%.4f 干燥重=%.4f" %
              (desc, row_idx, stable_weight, tare_weight, self._tare_offset, dry))
         return dry
 
     def _do_weighing(self):
         """批量称量: 先从1号校正坩埚开始，再称所有样品
-
-        第1轮: 称校正坩埚 → 称样品 → 写入 check_dry_weight
-        第2轮起: 称校正坩埚 → 称样品 → 写入 dry_weight
+        
+        每轮都写入 dry_weight（干燥重量）列。
+        检查性干燥重量列由 _step_const_check 在必要时前移填充。
         """
         mode = "分析水" if self._is_aw else "全水"
 
         self._dry_cycle += 1
-        is_first = (self._dry_cycle == 1)
-        self._tare_offset = 0.0
 
-        col_name = "检查性干燥重量" if is_first else "干燥重量"
+        col_name = "干燥重量"
         results = []
         mode_name = "分析水" if self._is_aw else "全水"
-        total_samples = len(self._samples)
 
-        # ---- 1. 先称校正坩埚(1号位) ----
+        # ---- 1. 先称校正坩埚(1号位)，计算天平漂移偏移 ----
         if not self._running:
             return
-        crucible_tare = self._get_tare_from_db(0)
-        crucible_dry = self._weigh_single(0, "校正坩埚", crucible_tare, desc="校正坩埚(%s)" % col_name,
+        crucible_known = self._get_tare_from_db(0)
+        crucible_dry = self._weigh_single(0, "校正坩埚", 0.0, desc="校正坩埚(%s)" % col_name,
                                           progress_cb=lambda w: self.sig_status_msg.emit(
                                               "正在称重1号样品重量：%.4fg" % w))
         if crucible_dry is not None:
+            self._tare_offset = round(crucible_dry - crucible_known, 4)
             self.sig_weigh_result.emit(0, crucible_dry, self._phase)
             self._save_weigh_result(0, "校正坩埚", "", 0.0,
                                     int(round(crucible_dry * 10000)) + 1000000,
-                                    crucible_dry, crucible_tare, self._tare_offset, is_first=is_first)
-        _log("校正坩埚 row=0 tare=%.4f dry=%.4f" % (crucible_tare, crucible_dry or 0.0))
+                                    crucible_dry, 0.0, self._tare_offset)
+            _log("校正坩埚 row=0 已知=%.4f 实测=%.4f 校正偏移=%.4f" %
+                 (crucible_known, crucible_dry, self._tare_offset))
+        else:
+            self._tare_offset = 0.0
 
         # ---- 2. 称量所有样品 ----
         for idx, (row_idx, name, mode_str, sample_weight) in enumerate(self._samples):
@@ -1005,7 +1013,7 @@ class TestWorker(QObject):
             mid_val = int(round(dry_weight * 10000)) + 1000000
             self.sig_weigh_result.emit(row_idx, dry_weight, self._phase)
             self._save_weigh_result(row_idx, name, mode_str, 0.0, mid_val,
-                                    dry_weight, tare, self._tare_offset, is_first=is_first)
+                                    dry_weight, tare, self._tare_offset)
             results.append((row_idx, dry_weight))
             QApplication.processEvents()
 
@@ -1024,25 +1032,46 @@ class TestWorker(QObject):
         第1轮: 已写入检查性干燥重量, 无对比基准 → 直接重新加热
         第2轮起: 检查性干燥重量 vs 干燥重量 → diff<=精度则通过
                  不通过: 干燥重量覆盖检查性干燥重量 → 重新加热称重
-                 无次数上限, 直到全部样品通过
+                 最大循环次数 3 轮（含第1轮），超过则强制结束
         """
+        MAX_CYCLES = 3  # 最大循环次数(含首轮)，防死循环
+
         if not self._dry_cfg_const_check:
-            _log("跳过恒重检查")
+            _log("跳过恒重检查 (const_check=False)")
             self._dry_sub_state = _DrySubState.CONST_CHECK
             self._on_dry_done()
             return
 
         precision = self._dry_cfg_precision
+        _log("恒重检查: cycle=%d max=%d precision=%.4f samples=%d" %
+             (self._dry_cycle, MAX_CYCLES, precision, len(weigh_results) if weigh_results else 0))
 
-        # 第1轮: 刚写完检查性干燥重量, 无对比基准 → 直接重新加热
+        # 第1轮: 干燥重量已写入，检查性干燥重量为空
         if self._dry_cycle == 1:
-            _log("第1轮称重完成(检查性干燥重量), 重新加热进行第2轮")
+            if not self._dry_cfg_const_check:
+                # 无恒重检查 → 检查性干燥重量留空，直接结束
+                _log("第1轮称重完成, 未开启恒重检查, 结束")
+                self._dry_sub_state = _DrySubState.CONST_CHECK
+                self._on_dry_done()
+                return
+            # 有恒重检查 → 干燥重前移到检查性干燥重量，重新加热
+            _log("第1轮称重完成, 干燥重→检查性干燥重, 重新加热进行第2轮")
+            for row_idx, dry_weight in weigh_results:
+                self._save_check_dry_weight(row_idx, dry_weight)
+                _log("前移 row=%d check_dry←%.4f" % (row_idx, dry_weight))
             self.sig_status_msg.emit("检查性干燥重量已记录, 重新加热...")
             self._dry_sub_state = _DrySubState.START
-            # 重新加热时恒温时间使用称量间隔(而非首次烘干时间)
             r = self.cfg.aw_interval if self._is_aw else self.cfg.tw_interval
             self._hold_target = r if SPEED_MODE else r * 60
             self._step_dry_start()
+            return
+
+        # 超过最大循环次数 → 强制结束
+        if self._dry_cycle >= MAX_CYCLES:
+            _log("已达最大循环次数 %d, 强制结束恒重检查" % MAX_CYCLES)
+            self.sig_status_msg.emit("恒重检查已达最大次数, 强制结束")
+            self._dry_sub_state = _DrySubState.CONST_CHECK
+            self._on_dry_done()
             return
 
         # 第2轮起: 比较检查性干燥重量 vs 干燥重量
@@ -1243,26 +1272,19 @@ class TestWorker(QObject):
         return 0.0
 
     def _save_weigh_result(self, row_idx, name, mode, raw_weight, mid_val, dry_weight,
-                            tare_weight, tare_offset, is_first=False):
-        """保存称量结果: 首轮写入检查性干燥重量, 后续写入干燥重量"""
+                            tare_weight, tare_offset):
+        """保存称量结果: 写入干燥重量 (dry_weight) 列"""
         try:
             from db import upsert_experiment_sample, ensure_experiment
             eid = ensure_experiment()
-            if is_first:
-                upsert_experiment_sample(eid, row_idx,
-                                         name=name, mode=mode,
-                                         tare_weight=tare_weight,
-                                         check_dry_weight=dry_weight)
-            else:
-                upsert_experiment_sample(eid, row_idx,
-                                         name=name, mode=mode,
-                                         tare_weight=tare_weight,
-                                         dry_weight=dry_weight)
+            upsert_experiment_sample(eid, row_idx,
+                                     name=name, mode=mode,
+                                     tare_weight=tare_weight,
+                                     dry_weight=dry_weight)
             self._save_raw_data_backup(eid, row_idx, name, mode,
                                        raw_weight, mid_val, dry_weight,
                                        tare_weight, tare_offset, self._phase)
-            col = "check_dry" if is_first else "dry"
-            _log("DB保存 row=%d %s=%.4f" % (row_idx, col, dry_weight))
+            _log("DB保存 row=%d dry=%.4f" % (row_idx, dry_weight))
         except Exception as e:
             _log("DB保存失败: %s" % str(e))
 
