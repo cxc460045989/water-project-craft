@@ -114,6 +114,8 @@ class SerialManager(QObject):
         self._last_uplink_time = 0.0
         self._uplink_watchdog = None
         self._uplink_watchdog_interval = 3.0
+        self._bypass_readyread = False  # True: readyRead 数据存入 _sync_buf 而非 emit 信号
+        self._sync_buf = bytearray()    # 同步指令期间的响应数据缓冲区
 
     @staticmethod
     def scan_ports():
@@ -229,8 +231,8 @@ class SerialManager(QObject):
             return 0
         try:
             n = self._serial.write(data)
-            if hasattr(self._serial, 'flush'):
-                self._serial.flush()
+            if hasattr(self._serial, 'waitForBytesWritten'):
+                self._serial.waitForBytesWritten(100)
             return n
         except Exception as e:
             self.error_occurred.emit("发送失败: " + str(e))
@@ -252,10 +254,17 @@ class SerialManager(QObject):
     # ---- readyRead 信号处理 ----
 
     def _on_ready_read(self):
-        """串口硬件中断 → 读取数据 → 发射 data_received 信号"""
+        """串口硬件中断 → 读取数据
+        正常模式: emit data_received 信号通知 UI
+        旁路模式: 数据存入 _sync_buf，供同步指令等待读取
+        """
         data = self.readAll()
-        if data:
-            self._last_uplink_time = time.time()
+        if not data:
+            return
+        self._last_uplink_time = time.time()
+        if self._bypass_readyread:
+            self._sync_buf.extend(data)
+        else:
             self.data_received.emit(data)
 
     # ---- 上行时间戳 ----
@@ -459,6 +468,15 @@ class MockSerial(QObject):
         self.is_open = False
         self._in_buf.clear()
         self._out_buf.clear()
+
+    def waitForBytesWritten(self, msecs):
+        """Mock: 无传输延迟，始终返回 True"""
+        return True
+
+    def waitForReadyRead(self, msecs):
+        """Mock: write() 内已同步处理响应并存入 _sync_buf，
+        此处直接返回 True 表示'数据已就绪'"""
+        return True
 
     def add_response(self, cmd_prefix, resp_bytes):
         self._responses[cmd_prefix] = resp_bytes

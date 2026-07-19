@@ -120,6 +120,13 @@ class WeighWorker(QThread):
                 self._reweigh_tare()
             elif self._cur_phase == "reweigh_sample":
                 self._reweigh_sample()
+        except ConnectionError as e:
+            # 通讯异常: 先复位仪器，再通知 UI
+            _log("通讯异常, 发送复位指令: " + str(e))
+            self._send_reset()
+            self.sig_error.emit(str(e))
+            import traceback
+            traceback.print_exc()
         except Exception as e:
             self.sig_error.emit("称量异常: " + str(e))
             import traceback
@@ -593,7 +600,10 @@ class WeighWorker(QThread):
         return weight
 
     def _send_cmd(self, func_code, desc=""):
-        """发送固定4字节指令（带上行检测+重试）"""
+        """发送固定4字节指令（带上行检测+60s重试）
+        成功: 返回 True
+        失败: 抛出 ConnectionError 中断流程
+        """
         from protocol_layer import CommandBuilder, send_cmd_with_uplink_check
         cmd = CommandBuilder.build_command(func_code)
         _log("发送指令: " + desc + " code=0x" + format(func_code, "02X") +
@@ -602,7 +612,12 @@ class WeighWorker(QThread):
             self._serial, cmd, desc,
         )
         if not ok:
-            _log("指令发送失败(已重试3次): %s" % desc)
+            raise ConnectionError(
+                "仪器无响应: %s\n请检查:\n"
+                "  1. 仪器电源是否开启\n"
+                "  2. 串口线是否连接\n"
+                "  3. 串口号配置是否正确" % desc
+            )
 
     # 机械类指令（不改变炉温，无需温度检测）
     _MECHANICAL_CMDS = {CMD.SAMPLE_PLATE_UP, CMD.SAMPLE_PLATE_DOWN,
@@ -612,10 +627,13 @@ class WeighWorker(QThread):
 
     def _send_long_duration_cmd(self, func_code, desc="", timeout=15.0):
         """发送长耗时指令
+        先调用 _send_cmd 发指令(失败会抛 ConnectionError)，
+        再根据指令类型做机械等待。
         机械类指令：炉盖固定延时，其他机械指令等上行帧确认完成
-        热工类指令：通过温度变化检测完成"""
+        热工类指令：通过温度变化检测完成
+        """
         import time as _t
-        self._send_cmd(func_code, desc)
+        self._send_cmd(func_code, desc)  # 失败会抛 ConnectionError
         # 机械类指令
         if func_code in self._MECHANICAL_CMDS:
             if func_code in self._LID_CMDS:
@@ -678,7 +696,10 @@ class WeighWorker(QThread):
         return 0.0, None
 
     def _send_move_to(self, position):
-        """移动样盘到指定位（带上行检测+重试）"""
+        """移动样盘到指定位（带上行检测+60s重试）
+        成功: 返回 True
+        失败: 抛出 ConnectionError 中断流程
+        """
         from protocol_layer import CommandBuilder, send_cmd_with_uplink_check
         cmd = CommandBuilder.build_move_to(position)
         _log("样盘移动: pos=" + str(position) +
@@ -687,7 +708,12 @@ class WeighWorker(QThread):
             self._serial, cmd, "移动到" + str(position) + "号位",
         )
         if not ok:
-            _log("样盘移动指令发送失败(已重试3次): pos=%d" % position)
+            raise ConnectionError(
+                "仪器无响应: 移动到%d号位\n请检查:\n"
+                "  1. 仪器电源是否开启\n"
+                "  2. 串口线是否连接\n"
+                "  3. 串口号配置是否正确" % position
+            )
 
     def _read_uplink_weight(self):
         try:
@@ -729,6 +755,16 @@ class WeighWorker(QThread):
             return aw if aw > 0 else tw
         except Exception:
             return 0.0
+
+    def _send_reset(self):
+        """发送仪器复位指令（不等响应，发后不管）"""
+        try:
+            from protocol_layer import CommandBuilder
+            cmd = CommandBuilder.build_command(CMD.RESET)
+            self._serial.send(cmd)
+            _log("已发送仪器复位 " + cmd.hex())
+        except Exception:
+            pass
 
     def _sleep(self, secs):
         if secs <= 0:

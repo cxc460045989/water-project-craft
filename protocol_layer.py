@@ -299,10 +299,14 @@ class CmdSender(QObject):
 # send_cmd_with_uplink_check — 兼容层（同步函数，逐步过渡期使用）
 # ============================================================
 def send_cmd_with_uplink_check(serial_mgr, cmd_bytes, desc="", temp_callback=None):
-    """发指令 → 等仪器即时响应（上行帧），持续重试直至成功或60秒超时
+    """发指令 → 等仪器上行帧响应，持续重试直至成功或60秒超时
 
-    仪器可能在非空闲状态暂时无上行帧，因此不设重试次数上限，
-    而是持续重试直到收到响应或总时间超过60秒。
+    发送后轮询 _sync_buf（由主线程 _on_ready_read 正常接收上行帧填充）。
+    仪器约每1秒发一帧上行帧，每次等待最多 1.2s 覆盖一个完整周期。
+    收到上行帧 → 成功返回；超时 → 重发，总超时 60s。
+
+    注意: 不使用 waitForReadyRead，因为它会吞掉 readyRead 信号，
+    导致 _on_ready_read 槽函数不被调用，_sync_buf 始终为空。
 
     参数:
         serial_mgr: SerialManager 实例
@@ -311,84 +315,78 @@ def send_cmd_with_uplink_check(serial_mgr, cmd_bytes, desc="", temp_callback=Non
         temp_callback: 可选, callable(temperature_float)
     """
     import time as _time
-    from PySide2.QtWidgets import QApplication
 
-    RESP_WAIT_S = 0.2       # 每次等待响应窗口
-    TOTAL_TIMEOUT_S = 60.0  # 总超时: 1分钟
-    first_attempt = True
+    TOTAL_TIMEOUT_S = 60.0    # 总超时: 1分钟
+    FRAME_WAIT_S = 1.2        # 等待下一个上行帧 (仪器 ~1s/帧, 留余量)
+    POLL_INTERVAL_S = 0.05    # 轮询间隔: 50ms
+    RETRY_INTERVAL_S = 0.1    # 重试间隔
     overall_start = _time.time()
+    attempt = 0
 
-    # 一次性排空旧数据（非阻塞）
+    # 激活旁路: readyRead 数据 → _sync_buf, 不发 signal
+    serial_mgr._bypass_readyread = True
     try:
-        avail = serial_mgr.bytesAvailable
-    except Exception:
-        avail = 0
-    if avail > 0:
-        try:
-            stale = serial_mgr.readAll()
-        except Exception:
-            stale = b""
-        if stale and temp_callback:
-            buf = UplinkBuffer()
-            for f in buf.feed(stale):
-                try:
-                    temp_callback(f["temperature"])
-                except Exception:
-                    pass
+        # 排空旧数据
+        serial_mgr._sync_buf.clear()
 
-    while True:
-        # 总超时检查
-        if _time.time() - overall_start > TOTAL_TIMEOUT_S:
-            logger.warning("[CMD] 发送超时(60s无响应): %s" % desc)
-            return False
+        while True:
+            # 总超时检查
+            elapsed = _time.time() - overall_start
+            if elapsed > TOTAL_TIMEOUT_S:
+                logger.warning("[CMD] 发送超时(60s无响应): %s (共%d次尝试)" % (desc, attempt))
+                return False
 
-        n = serial_mgr.send(cmd_bytes)
-        if n == 0:
-            if first_attempt:
-                logger.warning("[CMD] 发送失败(%s)，将持续重试" % desc)
-                first_attempt = False
-            _time.sleep(0.1)
-            continue
-        if first_attempt:
-            logger.info("[CMD] 已发送: %s | %s" % (desc, cmd_bytes.hex()))
-            first_attempt = False
+            # 清空缓冲区，准备接收本次响应
+            serial_mgr._sync_buf.clear()
 
-        # 等待响应
-        resp_start = _time.time()
-        resp_received = False
-        while (_time.time() - resp_start) < RESP_WAIT_S:
-            if _time.time() - overall_start > TOTAL_TIMEOUT_S:
-                break
-            try:
-                avail = serial_mgr.bytesAvailable
-            except Exception:
-                avail = 0
-            if avail > 0:
-                try:
-                    raw = serial_mgr.readAll()
-                except Exception:
-                    raw = b""
-                if raw:
+            n = serial_mgr.send(cmd_bytes)
+            if n == 0:
+                if attempt == 0:
+                    logger.warning("[CMD] 发送失败(%s)，将持续重试" % desc)
+                _time.sleep(RETRY_INTERVAL_S)
+                attempt += 1
+                continue
+
+            if attempt == 0:
+                logger.info("[CMD] 已发送: %s | %s" % (desc, cmd_bytes.hex()))
+            attempt += 1
+
+            # 轮询 _sync_buf 等待下一个上行帧 (仪器 ~1s/帧)
+            # 不使用 waitForReadyRead — 它会吞掉 readyRead 信号!
+            wait_start = _time.time()
+            resp_received = False
+            while (_time.time() - wait_start) < FRAME_WAIT_S:
+                if _time.time() - overall_start > TOTAL_TIMEOUT_S:
+                    break
+
+                if len(serial_mgr._sync_buf) > 0:
+                    raw = bytes(serial_mgr._sync_buf)
+                    serial_mgr._sync_buf.clear()
                     buf = UplinkBuffer()
                     frames = buf.feed(raw)
                     if frames:
                         serial_mgr.update_uplink_time()
-                        if temp_callback:
-                            for f in frames:
+                        for f in frames:
+                            logger.info("[CMD] 收到上行帧: %s  temp=%.1f weight=%.4f online=%d btn=%d" % (
+                                f["raw_str"], f["temperature"], f["weight"], f["online"], f["btn_pressed"]))
+                            if temp_callback:
                                 try:
                                     temp_callback(f["temperature"])
                                 except Exception:
                                     pass
                         resp_received = True
                         break
-            _time.sleep(0.05)
 
-        if resp_received:
-            logger.info("[CMD] 发送成功，收到响应: %s" % desc)
-            return True
+                _time.sleep(POLL_INTERVAL_S)
 
-        # 未收到响应，短暂等待后重试
-        _time.sleep(0.1)
+            if resp_received:
+                logger.info("[CMD] 发送成功: %s (第%d次尝试, 耗时%.1fs)" % (desc, attempt, elapsed))
+                return True
+
+            # 1.2s 内无上行帧，短暂等待后重试
+            _time.sleep(RETRY_INTERVAL_S)
+    finally:
+        serial_mgr._bypass_readyread = False
 
 
 # ============================================================
