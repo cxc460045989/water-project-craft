@@ -136,6 +136,7 @@ class TestProcessController(QObject):
         self._tw_results: Dict = {}
         self._check_dry_weights: Dict[int, float] = {}  # row_idx → weight
         self._dry_weights: Dict[int, float] = {}
+        self._pos_name_map: Dict[int, str] = {}           # position → 样品名(称重进度文案)
 
         # ---- 定时器 ----
         self._tick_timer = QTimer(self)
@@ -333,9 +334,15 @@ class TestProcessController(QObject):
         self._weigh_module.weigh_finished.connect(self._on_mode_weigh_done)
         self._weigh_module.weigh_error.connect(self._on_sub_error)
         self._weigh_module.weigh_progress.connect(self.sub_weigh_progress)
+        self._weigh_module.weigh_progress.connect(self._on_weigh_progress)
 
         mode_samples = self._get_mode_samples()
-        positions = [s["row_idx"] + 1 for s in mode_samples]
+        # 建立位置 → 样品名映射（用于称重进度文案）
+        self._pos_name_map = {}
+        for s in mode_samples:
+            self._pos_name_map[s["row_idx"] + 1] = s.get("name", "")
+        # 称重从校正坩埚(1号位)开始，再称样品
+        positions = [1] + [s["row_idx"] + 1 for s in mode_samples]
         correct_diff = float(self._mode_params.get("correct_diff", 0.0))
 
         self._weigh_module.start_weigh(
@@ -363,6 +370,9 @@ class TestProcessController(QObject):
 
         for record in result.records:
             row_idx = record.position - 1  # position 是 1-based
+            if row_idx == 0:
+                # 校正坩埚，非样品，跳过
+                continue
             tare_w = tare_map.get(row_idx, 0.0)
             # 样品净干燥重 = 校正后称重值 - 坩埚重
             sample_dry = round(max(0.0, record.corrected_weight - tare_w), 4)
@@ -398,9 +408,15 @@ class TestProcessController(QObject):
         self._cycle_module.cycle_progress.connect(self.sub_cycle_progress)
         self._cycle_module.temp_progress.connect(self.sub_temp_progress)
         self._cycle_module.weigh_progress.connect(self.sub_weigh_progress)
+        self._cycle_module.weigh_progress.connect(self._on_weigh_progress)
 
         mode_samples = self._get_mode_samples()
-        positions = [s["row_idx"] + 1 for s in mode_samples]
+        # 建立位置 → 样品名映射（用于称重进度文案）
+        self._pos_name_map = {}
+        for s in mode_samples:
+            self._pos_name_map[s["row_idx"] + 1] = s.get("name", "")
+        # 称重从校正坩埚(1号位)开始，再称样品
+        positions = [1] + [s["row_idx"] + 1 for s in mode_samples]
 
         # 取第一个样品的信息: 恒重模块对比的是含坩埚总重
         first_sample = mode_samples[0] if mode_samples else {}
@@ -692,6 +708,17 @@ class TestProcessController(QObject):
     def _on_sub_error(self, msg: str):
         """子模块异常"""
         self._handle_error("子模块异常: " + msg)
+
+    def _on_weigh_progress(self, info: dict):
+        """称重进度 → 底部状态栏，格式：正在称重X号样品(名称)重量：X.XXXXg"""
+        pos = info.get("position", 0)
+        weight = info.get("weight", 0.0)
+        name = self._pos_name_map.get(pos, "")
+        if pos == 1:
+            desc = "正在称重1号样品(校正坩埚)重量：%.4fg" % weight
+        else:
+            desc = "正在称重%d号样品(%s)重量：%.4fg" % (pos, name, weight)
+        self._emit_process_update({"stage_desc": desc})
 
     # ================================================================
     # 硬件控制
