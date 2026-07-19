@@ -288,7 +288,8 @@ class SettingsDialog(QDialog):
         port_layout.setSpacing(8)
         port_layout.addWidget(QLabel(" 串口号 "))
         self.cb_com_port = QComboBox()
-        self.cb_com_port.addItems(["COM1", "COM2"])
+        from serial_comm import SERIAL_PORT_DEFAULTS
+        self.cb_com_port.addItems(SERIAL_PORT_DEFAULTS)
         port_layout.addWidget(self.cb_com_port)
         port_layout.addStretch()
         right_bottom.addLayout(port_layout)
@@ -338,7 +339,8 @@ class SettingsDialog(QDialog):
                 self.tech_inputs[i].setText(str(v))
         # 单位
         # 串口号
-        port_val = p.get("com_port", "COM1")
+        from serial_comm import DEFAULT_PORT
+        port_val = p.get("com_port", DEFAULT_PORT)
         idx = self.cb_com_port.findText(port_val)
         if idx >= 0:
             self.cb_com_port.setCurrentIndex(idx)

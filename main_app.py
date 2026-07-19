@@ -420,7 +420,8 @@ class MoistureAnalyzer(QMainWindow):
         else:
             from db import load_params
             _p = load_params()
-            _com = _p.get("com_port", "COM1") or "COM1"
+            from serial_comm import DEFAULT_PORT
+            _com = _p.get("com_port", DEFAULT_PORT) or DEFAULT_PORT
             if _com:
                 logger.info("[SERIAL] 启动时自动打开串口: " + str(_com))
                 self.serial_mgr.open(port=_com)

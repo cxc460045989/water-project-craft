@@ -19,6 +19,16 @@
 import sys, time
 from collections import namedtuple
 
+# ---- 平台感知：串口默认名称 ----
+# Windows: COM1/COM2  |  Linux (麒麟): /dev/ttyS0, /dev/ttyS1
+_PLATFORM = sys.platform
+if _PLATFORM.startswith("linux"):
+    SERIAL_PORT_DEFAULTS = ["/dev/ttyS0", "/dev/ttyS1"]
+    DEFAULT_PORT = "/dev/ttyS0"
+else:
+    SERIAL_PORT_DEFAULTS = ["COM1", "COM2"]
+    DEFAULT_PORT = "COM1"
+
 from PySide2.QtCore import QObject, Signal, QTimer
 from PySide2.QtCore import Qt
 from PySide2.QtSerialPort import QSerialPort
