@@ -317,9 +317,9 @@ def _build_expected_response(cmd_bytes):
 def send_cmd_with_uplink_check(serial_mgr, cmd_bytes, desc="", temp_callback=None):
     """发指令 → 等仪器上行帧响应，持续重试直至成功或60秒超时
 
-    核心原则: 只清一次缓冲区（首次发送前），重试过程不再清理。
-    这样即使某次轮询窗口错过了响应，响应仍留在 _sync_buf 中，
-    下次重试时可直接命中，无需等待新帧。
+    流程: 发送指令 → 200ms内轮询 _sync_buf 匹配 ACK →
+          超时未匹配则重新发送（重试），总超时60s。
+    与 CmdSender.RESP_TIMEOUT_MS = 200 保持一致。
 
     参数:
         serial_mgr: SerialManager 实例
@@ -329,15 +329,16 @@ def send_cmd_with_uplink_check(serial_mgr, cmd_bytes, desc="", temp_callback=Non
     """
     import time as _time
 
-    TOTAL_TIMEOUT_S = 60.0    # 总超时: 1分钟
-    RETRY_INTERVAL_S = 0.05   # 重试间隔
+    TOTAL_TIMEOUT_S = 60.0      # 总超时: 1分钟
+    RESP_TIMEOUT_S = 0.2        # 单次发送后等待应答的超时: 200ms
+    POLL_INTERVAL_S = 0.05      # 轮询间隔: 50ms
     overall_start = _time.time()
     attempt = 0
 
     # 激活旁路: readyRead 数据 → _sync_buf, 不发 signal
     serial_mgr._enter_bypass()
     try:
-        # ★ 唯一一次清除: 排空旧数据，只执行一次
+        # 排空旧数据
         serial_mgr._sync_buf.clear()
 
         while True:
@@ -346,10 +347,11 @@ def send_cmd_with_uplink_check(serial_mgr, cmd_bytes, desc="", temp_callback=Non
                 logger.warning("[CMD] 发送超时(60s无响应): %s (共%d次尝试)" % (desc, attempt))
                 return False
 
+            # ===== 发送指令 =====
             n = serial_mgr.send(cmd_bytes)
             if n == 0:
                 logger.warning("[CMD] %s 发送失败，将重试" % desc)
-                _time.sleep(RETRY_INTERVAL_S)
+                _time.sleep(POLL_INTERVAL_S)
                 attempt += 1
                 continue
 
@@ -358,24 +360,42 @@ def send_cmd_with_uplink_check(serial_mgr, cmd_bytes, desc="", temp_callback=Non
             else:
                 logger.info("[CMD] >>> %s 重试(%d) | %s" % (desc, attempt, cmd_bytes.hex()))
             attempt += 1
+            send_time = _time.time()
 
-            # 发送后检查 _sync_buf: 校验应答是否匹配本次指令
-            if len(serial_mgr._sync_buf) > 0:
-                raw = bytes(serial_mgr._sync_buf)
-                # 构建预期应答
-                expected = _build_expected_response(cmd_bytes)
-                if expected is not None and raw != expected:
-                    # 不是本次指令的应答（可能是迟到旧数据），丢弃后重试
-                    serial_mgr._sync_buf.clear()
-                    _time.sleep(RETRY_INTERVAL_S)
-                    continue
-                serial_mgr._sync_buf.clear()
-                serial_mgr.update_uplink_time()
-                logger.info("[CMD] %s -> %s (耗时%.1fs)" % (desc, raw.hex(), elapsed))
-                return True
+            # ===== 200ms 轮询窗口: 只查不重发 =====
+            while True:
+                # 检查总超时
+                if _time.time() - overall_start > TOTAL_TIMEOUT_S:
+                    logger.warning("[CMD] 发送超时(60s无响应): %s (共%d次尝试)" % (desc, attempt))
+                    return False
 
-            # 无上行帧，短暂等待后重试（不清缓冲区）
-            _time.sleep(RETRY_INTERVAL_S)
+                # 检查 _sync_buf
+                if len(serial_mgr._sync_buf) > 0:
+                    raw = bytes(serial_mgr._sync_buf)
+                    expected = _build_expected_response(cmd_bytes)
+                    if expected is not None:
+                        idx = raw.find(expected)
+                        if idx >= 0:
+                            # 找到应答: 移除已消费部分，保留后续数据
+                            consumed = idx + len(expected)
+                            del serial_mgr._sync_buf[:consumed]
+                            serial_mgr.update_uplink_time()
+                            logger.info("[CMD] %s -> %s (耗时%.1fs)" % (desc, expected.hex(), _time.time() - send_time))
+                            return True
+                        # 有数据但不含 ACK（仅有上行帧），不清缓冲区，继续等
+                    else:
+                        # expected 为 None: 有数据就当作成功
+                        serial_mgr._sync_buf.clear()
+                        serial_mgr.update_uplink_time()
+                        logger.info("[CMD] %s -> %s (耗时%.1fs)" % (desc, raw.hex(), _time.time() - send_time))
+                        return True
+
+                # 200ms 窗口到期 → 退出内层循环，重新发送
+                if _time.time() - send_time > RESP_TIMEOUT_S:
+                    break
+
+                _time.sleep(POLL_INTERVAL_S)
+            # 200ms 无应答 → 回到外层循环重新发送
     finally:
         serial_mgr._leave_bypass()
 
