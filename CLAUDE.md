@@ -75,6 +75,7 @@
 - **代码清洁义务**：每次修改代码前，须检查项目根目录是否存在以下可安全清理的文件，若有则直接删除（不影响运行）：
   - _gen_main.py、_fix.py、_fix_arrow_label.py、_err.txt、_out.txt、generate_icon.py、app_icon.ico
   - 删除后记录到修改说明中，无需单独征求意见。
+  - **⚠️ _backup_20260719_stable/ 目录不可删除！** 该目录是串口指令优化后的稳定备份。
 
 ## 打包规则（PyInstaller）
 ### 数据库打包规则（优先级最高）
