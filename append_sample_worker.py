@@ -187,7 +187,7 @@ class AppendSampleWorker(QThread):
                     "phase": "tare", "row": self._row,
                     "name": self._name, "weight": display
                 })
-            self._sleep(1.0)
+            self._sleep(0.5)
         # 5s 结束后取一次最新读数作为最终坩埚重
         final_w, final_ok = self._read_uplink_weight()
         if final_ok:

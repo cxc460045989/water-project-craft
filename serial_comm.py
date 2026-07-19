@@ -246,11 +246,6 @@ class SerialManager(QObject):
             n = self._serial.write(data)
             if hasattr(self._serial, 'waitForBytesWritten'):
                 self._serial.waitForBytesWritten(100)
-            # Mock + 旁路模式: write() 内已同步生成响应到 _out_buf，
-            # 但 readyRead 跨线程时 Qt 走 QueuedConnection 会延迟。
-            # 直接同步读取，确保 _sync_buf 在 send() 返回时已有数据。
-            if self._mock and self._bypass_readyread:
-                self._on_ready_read()
             return n
         except Exception as e:
             self.error_occurred.emit("发送失败: " + str(e))

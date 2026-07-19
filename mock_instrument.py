@@ -170,8 +170,9 @@ class MockInstrumentSimulator(QObject):
         if data[1] != 0x4D:
             if data[1] == 0x57:
                 self._handle_temp_control(data)
+                return bytes([0x4F, 0x4B, data[2], data[3], data[4], 0x4E, 0x44])
             elif data[1] == 0x58:
-                pass
+                return bytes([0x4F, 0x4B, data[2], data[3], data[4], 0x4E, 0x44])
             return b""
 
         fc = data[2]
@@ -187,8 +188,6 @@ class MockInstrumentSimulator(QObject):
             self._beeper_on = False
         elif fc == CMD.SAMPLE_PLATE_UP:
             self._plate_pos = 1
-            if not self._moisture_testing:
-                self._in_sample_phase = False
         elif fc == CMD.SAMPLE_PLATE_DOWN:
             self._plate_pos = 0
         elif fc == CMD.TARE:
@@ -249,7 +248,7 @@ class MockInstrumentSimulator(QObject):
             if 1 <= pos <= 99:
                 self._position = pos
                 self._plate_pos = 1
-        return b""
+        return bytes([0x4F, 0x4B, fc, 0x45, 0x4E, 0x44])
 
     def _handle_temp_control(self, data):
         if len(data) >= 7:
@@ -349,6 +348,14 @@ class SimSerialAdapter(QObject):
         if resp:
             with self._lock:
                 self._read_buf.extend(resp)
+        # 同步排空模拟器上行帧到 _read_buf
+        self._drain_uplink()
+        # bypass 模式: 直调 _on_ready_read 同步填入 _sync_buf，
+        # 避免 readyRead QueuedConnection 跨线程排队延迟。
+        if self._serial_mgr and self._serial_mgr._bypass_readyread:
+            self._serial_mgr._on_ready_read()
+        else:
+            self.readyRead.emit()
         return n
 
     def flush(self):

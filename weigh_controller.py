@@ -241,7 +241,7 @@ class WeighWorker(QThread):
                     if ok:
                         net_w = round(w - self._get_tare_weight(row), 4)
                         self.sig_real_time_sample_weight.emit(net_w)
-                    self._sleep(1.0)
+                    self._sleep(0.5)
                 self._send_cmd(CMD.BEEPER_1S, desc="蜂鸣提示加样")
                 self._sleep(CMD_INTERVAL_S)
                 tare_weight = self._get_tare_weight(row)
@@ -421,7 +421,7 @@ class WeighWorker(QThread):
             if ok:
                 last_weight = round(weight, 4)
             else:
-                self._sleep(1.0)
+                self._sleep(0.5)
                 continue
             # 净重 = 读数 - 坩埚重
             net_weight = round(last_weight - tare_weight, 4)
@@ -436,7 +436,7 @@ class WeighWorker(QThread):
             if self._last_btn_pressed:
                 self._confirm_event.set()
                 break
-            self._sleep(1.0)
+            self._sleep(0.5)
         return last_weight
 
     def _wait_confirm_with_display(self, tare_weight):
@@ -455,7 +455,7 @@ class WeighWorker(QThread):
                 self._send_weight_fire_and_forget(sample)
                 if self._check_instrument_button():
                     return True
-            self._sleep(1.0)
+            self._sleep(0.5)
         return True
 
     def confirm_current_weigh(self):
@@ -593,7 +593,7 @@ class WeighWorker(QThread):
                 self.sig_weigh_progress.emit({
                     "phase": phase, "row": row, "name": name, "weight": display_weight
                 })
-            self._sleep(1.0)
+            self._sleep(0.5)
         weight = round(weight, 4)
         _log("称量完成 row={} name={} 重量={:.4f}g".format(row, name, weight))
         return weight

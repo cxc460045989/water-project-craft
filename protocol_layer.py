@@ -298,6 +298,22 @@ class CmdSender(QObject):
 # ============================================================
 # send_cmd_with_uplink_check — 兼容层（同步函数，逐步过渡期使用）
 # ============================================================
+def _build_expected_response(cmd_bytes):
+    """根据下行指令构建预期应答
+    4字节指令: 5A 4D <fc> 44  →  4F 4B <fc> 45 4E 44
+    控温指令:  5A 57 <d1> <d2> <d3> <d4> 44  →  4F 4B <d1> <d2> <d3> 4E 44
+    发送重量:  5A 58 <d1>...<d8> 44  →  4F 4B <d1> <d2> <d3> 4E 44
+    无法识别:  返回 None，不做校验
+    """
+    if len(cmd_bytes) < 4 or cmd_bytes[0] != 0x5A or cmd_bytes[-1] != 0x44:
+        return None
+    if cmd_bytes[1] == 0x4D and len(cmd_bytes) == 4:
+        return bytes([0x4F, 0x4B, cmd_bytes[2], 0x45, 0x4E, 0x44])
+    if cmd_bytes[1] in (0x57, 0x58) and len(cmd_bytes) >= 6:
+        return bytes([0x4F, 0x4B, cmd_bytes[2], cmd_bytes[3], cmd_bytes[4], 0x4E, 0x44])
+    return None
+
+
 def send_cmd_with_uplink_check(serial_mgr, cmd_bytes, desc="", temp_callback=None):
     """发指令 → 等仪器上行帧响应，持续重试直至成功或60秒超时
 
@@ -314,8 +330,6 @@ def send_cmd_with_uplink_check(serial_mgr, cmd_bytes, desc="", temp_callback=Non
     import time as _time
 
     TOTAL_TIMEOUT_S = 60.0    # 总超时: 1分钟
-    FRAME_WAIT_S = 0.1        # 等待上行帧 (仪器响应几十ms, 100ms足够)
-    POLL_INTERVAL_S = 0.01    # 轮询间隔: 10ms
     RETRY_INTERVAL_S = 0.05   # 重试间隔
     overall_start = _time.time()
     attempt = 0
@@ -334,49 +348,33 @@ def send_cmd_with_uplink_check(serial_mgr, cmd_bytes, desc="", temp_callback=Non
 
             n = serial_mgr.send(cmd_bytes)
             if n == 0:
-                if attempt == 0:
-                    logger.warning("[CMD] 发送失败(%s)，将持续重试" % desc)
+                logger.warning("[CMD] %s 发送失败，将重试" % desc)
                 _time.sleep(RETRY_INTERVAL_S)
                 attempt += 1
                 continue
 
             if attempt == 0:
-                logger.info("[CMD] 已发送: %s | %s" % (desc, cmd_bytes.hex()))
+                logger.info("[CMD] >>> %s | %s" % (desc, cmd_bytes.hex()))
+            else:
+                logger.info("[CMD] >>> %s 重试(%d) | %s" % (desc, attempt, cmd_bytes.hex()))
             attempt += 1
 
-            # 轮询 _sync_buf: 只要缓冲区有数据就视为仪器响应
-            # 重试时不清 buffer，上次错过的响应仍可被命中
-            wait_start = _time.time()
-            resp_received = False
-            while (_time.time() - wait_start) < FRAME_WAIT_S:
-                if _time.time() - overall_start > TOTAL_TIMEOUT_S:
-                    break
-
-                if len(serial_mgr._sync_buf) > 0:
-                    raw = bytes(serial_mgr._sync_buf)
+            # 发送后检查 _sync_buf: 校验应答是否匹配本次指令
+            if len(serial_mgr._sync_buf) > 0:
+                raw = bytes(serial_mgr._sync_buf)
+                # 构建预期应答
+                expected = _build_expected_response(cmd_bytes)
+                if expected is not None and raw != expected:
+                    # 不是本次指令的应答（可能是迟到旧数据），丢弃后重试
                     serial_mgr._sync_buf.clear()
-                    buf = UplinkBuffer()
-                    frames = buf.feed(raw)
-                    if frames:
-                        serial_mgr.update_uplink_time()
-                        for f in frames:
-                            logger.info("[CMD] 收到上行帧: %s  temp=%.1f weight=%.4f online=%d btn=%d" % (
-                                f["raw_str"], f["temperature"], f["weight"], f["online"], f["btn_pressed"]))
-                            if temp_callback:
-                                try:
-                                    temp_callback(f["temperature"])
-                                except Exception:
-                                    pass
-                        resp_received = True
-                        break
-
-                _time.sleep(POLL_INTERVAL_S)
-
-            if resp_received:
-                logger.info("[CMD] 发送成功: %s (第%d次尝试, 耗时%.1fs)" % (desc, attempt, elapsed))
+                    _time.sleep(RETRY_INTERVAL_S)
+                    continue
+                serial_mgr._sync_buf.clear()
+                serial_mgr.update_uplink_time()
+                logger.info("[CMD] %s -> %s (耗时%.1fs)" % (desc, raw.hex(), elapsed))
                 return True
 
-            # 500ms 内无上行帧，短暂等待后重试（不清缓冲区）
+            # 无上行帧，短暂等待后重试（不清缓冲区）
             _time.sleep(RETRY_INTERVAL_S)
     finally:
         serial_mgr._leave_bypass()

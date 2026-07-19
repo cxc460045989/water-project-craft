@@ -955,6 +955,9 @@ class TestWorker(QObject):
             _log("第1轮称重完成(检查性干燥重量), 重新加热进行第2轮")
             self.sig_status_msg.emit("检查性干燥重量已记录, 重新加热...")
             self._dry_sub_state = _DrySubState.START
+            # 重新加热时恒温时间使用称量间隔(而非首次烘干时间)
+            r = self.cfg.aw_interval if self._is_aw else self.cfg.tw_interval
+            self._hold_target = r if SPEED_MODE else r * 60
             self._step_dry_start()
             return
 
@@ -986,6 +989,9 @@ class TestWorker(QObject):
             _log("恒重检查未通过, 重新加热(第 %d 轮)" % (self._dry_cycle + 1))
             self.sig_status_msg.emit("恒重检查未通过, 重新加热(第%d轮)" %
                                       (self._dry_cycle + 1))
+            # 重新加热时恒温时间使用称量间隔
+            r = self.cfg.aw_interval if self._is_aw else self.cfg.tw_interval
+            self._hold_target = r if SPEED_MODE else r * 60
             self._step_dry_start()
 
     # ========= 串口工具方法 =========
@@ -1032,6 +1038,8 @@ class TestWorker(QObject):
         buf = UplinkBuffer()
         frames = buf.feed(raw)
         for f in frames:
+            self._current_temp = f["temperature"]
+            self._current_weight = f["weight"]
             self.sig_temp_update.emit(f["temperature"])
 
     def _safe_send_cmd(self, func_code, desc):
@@ -1039,7 +1047,7 @@ class TestWorker(QObject):
         if not self._serial or not self._serial.is_connected:
             return
         try:
-            # 非阻塞消费缓冲区已有数据, 转发温度到UI
+            # 非阻塞消费缓冲区已有数据, 转发温度+重量到UI
             try:
                 avail = self._serial.bytesAvailable
             except Exception:
@@ -1050,6 +1058,7 @@ class TestWorker(QObject):
                     buf = UplinkBuffer()
                     for f in buf.feed(raw):
                         self._current_temp = f["temperature"]
+                        self._current_weight = f["weight"]
                         self.sig_temp_update.emit(f["temperature"])
             cmd = CommandBuilder.build_command(func_code)
             self._serial.send(cmd)
@@ -1088,30 +1097,38 @@ class TestWorker(QObject):
         return None
 
     def _read_current_weight(self):
-        """读取当前天平重量(非阻塞)"""
+        """读取当前天平重量(非阻塞)
+
+        优先从串口缓冲区直接读取; 若无可读数据则回退到
+        _on_uplink_data 已更新的 _current_weight (来自 data_received 信号),
+        确保在 readyRead 已消费数据后仍能获取最新重量。
+        """
         try:
             avail = self._serial.bytesAvailable
         except Exception:
             avail = 0
-        if avail == 0:
-            return None
-        try:
-            raw = self._serial.readAll()
-        except Exception:
-            return None
-        if not raw:
-            return None
-        buf = UplinkBuffer()
-        frames = buf.feed(raw)
-        if frames:
-            self._last_uplink_time = time.time()
-            w = frames[-1]["weight"]
-            # 节流: 1s 最多一条天平读数日志
-            now = time.time()
-            if now - getattr(self, "_last_weight_log_time", 0) >= 1.0:
-                _log("天平读数: %.4fg" % w)
-                self._last_weight_log_time = now
-            return w
+        if avail > 0:
+            try:
+                raw = self._serial.readAll()
+            except Exception:
+                raw = b""
+            if raw:
+                buf = UplinkBuffer()
+                frames = buf.feed(raw)
+                if frames:
+                    self._last_uplink_time = time.time()
+                    w = frames[-1]["weight"]
+                    # 同步更新 _current_weight, 保持一致性
+                    self._current_weight = w
+                    # 节流: 1s 最多一条天平读数日志
+                    now_ts = time.time()
+                    if now_ts - getattr(self, "_last_weight_log_time", 0) >= 1.0:
+                        _log("天平读数: %.4fg" % w)
+                        self._last_weight_log_time = now_ts
+                    return w
+        # 回退: 使用 data_received → _on_uplink_data 已更新的当前重量
+        if self._current_weight != 0.0:
+            return self._current_weight
         return None
 
     # ========= 数据持久化 =========
