@@ -46,6 +46,8 @@ class AppendSampleWorker(QThread):
     sig_progress = Signal(dict)
     sig_done = Signal(bool, str)
     sig_error = Signal(str)
+    # 跨线程安全: 回填信号通过 QueuedConnection 在主线程写表格
+    sig_tare_backfill = Signal(int, float)
 
     def __init__(self, serial_mgr, table_ref, row, name, mode, parent=None):
         super().__init__(parent)
@@ -200,18 +202,9 @@ class AppendSampleWorker(QThread):
     # ================================================================
 
     def _backfill_tare(self, weight):
-        """回填坩埚重到表格 + 数据库"""
-        from PySide2.QtWidgets import QTableWidgetItem
-        from PySide2.QtCore import Qt
-        item = self._table.item(self._row, TARE_TARGET_COL)
-        if item is None:
-            item = QTableWidgetItem("%.4f" % weight)
-            item.setTextAlignment(Qt.AlignCenter)
-            item.setFlags(item.flags() & ~Qt.ItemIsEditable)
-            self._table.setItem(self._row, TARE_TARGET_COL, item)
-        else:
-            item.setText("%.4f" % weight)
-
+        """回填坩埚重 — 通过信号在主线程写表格 + DB"""
+        # 跨线程安全: sig_tare_backfill 通过 QueuedConnection 在主线程执行 UI 操作
+        self.sig_tare_backfill.emit(self._row, weight)
         from db import upsert_experiment_sample, ensure_experiment, save_sample
         eid = ensure_experiment()
         upsert_experiment_sample(eid, self._row, tare_weight=weight)

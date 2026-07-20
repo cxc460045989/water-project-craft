@@ -131,7 +131,6 @@ class WeighDialog(QDialog):
         self.btn_action.setVisible(False)
         self.btn_confirm.setVisible(False)
         self.btn_cancel.setVisible(True)
-        self.btn_cancel.setEnabled(False)
         self.title_label.setText(msg)
         self.sub_label.setText("")
         self.weight_label.setText("")
@@ -141,7 +140,6 @@ class WeighDialog(QDialog):
         self._phase = "weighing"
         self.btn_action.setVisible(False)
         self.btn_cancel.setVisible(True)
-        self.btn_cancel.setEnabled(False)
 
         self.title_label.setText("正在称量 " + str(row + 1) + " 号坩埚")
         self.sub_label.setText("样品名称：" + name)
@@ -152,7 +150,6 @@ class WeighDialog(QDialog):
         self._phase = "weighing_sample"
         self.btn_action.setVisible(False)
         self.btn_cancel.setVisible(True)
-        self.btn_cancel.setEnabled(False)
 
         self.title_label.setText("正在称量 " + str(row + 1) + " 号样品")
         self.sub_label.setText("样品名称：" + name)
@@ -178,11 +175,6 @@ class WeighDialog(QDialog):
         self.weight_label.setText("")
         self.btn_action.setVisible(False)
         self.btn_cancel.setVisible(True)
-        self.btn_cancel.setEnabled(False)
-
-    def enable_cancel(self, enabled):
-        self.btn_cancel.setEnabled(enabled)
-
 
     def show_single_weigh_waiting(self, row, name, weight):
         """单个称量：等待确认状态，显示实时重量"""
@@ -191,7 +183,6 @@ class WeighDialog(QDialog):
         self.btn_confirm.setVisible(True)
         self.btn_confirm.setEnabled(True)
         self.btn_cancel.setVisible(True)
-        self.btn_cancel.setEnabled(True)
         self.title_label.setText("请添加样品后点击确认")
         self.sub_label.setText(str(row + 1) + "号 " + name)
         self.weight_label.setText("{:.4f}g".format(weight))
@@ -201,7 +192,6 @@ class WeighDialog(QDialog):
         self._phase = "out_of_range"
         self.btn_confirm.setVisible(False)
         self.btn_cancel.setVisible(True)
-        self.btn_cancel.setEnabled(False)
         self.title_label.setText("样品重量超出范围")
         self.sub_label.setText("样重超出范围（{:.4f}-{:.4f}g）！".format(lo, hi))
         self.weight_label.setText("将重新称量该样品")
@@ -225,7 +215,6 @@ class WeighDialog(QDialog):
         self._phase = "single_done"
         self.btn_confirm.setVisible(False)
         self.btn_cancel.setVisible(True)
-        self.btn_cancel.setEnabled(False)
         self.title_label.setText(str(row + 1) + "号称量完成")
         self.sub_label.setText("重量: {:.4f}g".format(weight))
         self.weight_label.setText("")
@@ -247,5 +236,4 @@ class WeighDialog(QDialog):
         self.btn_confirm.setVisible(False)
         self.btn_action.setVisible(False)
         self.btn_cancel.setVisible(True)
-        self.btn_cancel.setEnabled(True)
         self._phase = ""

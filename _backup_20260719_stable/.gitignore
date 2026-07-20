@@ -1,0 +1,50 @@
+﻿# === Python ===
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+*.egg
+dist/
+*.egg-info/
+*.spec
+
+# === IDE / Editor ===
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# === OS ===
+Thumbs.db
+.DS_Store
+
+# === Build artifacts ===
+dist/
+*.exe
+*.msi
+
+# === Project temp files (underscore-prefixed, not part of source) ===
+_[!_]*.py
+
+# === Logs ===
+*.log
+
+# === Runtime data ===
+data.db
+data_backup_*.db
+
+# === Temp verification files ===
+_db_verify.txt
+
+# === Accidental nul file (Windows NUL redirection artifact) ===
+nul
+
+# === PyInstaller build cache ===
+build/
+# === Temp build output ===
+_dist_temp/
+
+# === 串口通讯协议规范（内部文档，不入库） ===
+串口通讯协议规范.docx
+*.docx

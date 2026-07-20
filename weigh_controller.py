@@ -149,16 +149,6 @@ class WeighWorker(QThread):
         _log("批量坩埚称量开始, 共 " + str(len(self._valid_rows)) + " 个")
         self._send_long_duration_cmd(CMD.CLOSE_LID, desc="正在关闭炉盖")
 
-        # 先发送坩埚校正值到仪器
-        corr_w = self._get_crucible_correction_weight()
-        if corr_w > 0:
-            _log("发送坩埚校正值: {:.4f}g".format(corr_w))
-            from protocol_layer import CommandBuilder
-            corr_cmd = CommandBuilder.build_send_weight(corr_w)
-            from protocol_layer import send_cmd_with_uplink_check
-            send_cmd_with_uplink_check(self._serial, corr_cmd, "坩埚校正值")
-            self._sleep(CMD_INTERVAL_S)
-
         # 称量1号坩埚（表格第0行）
         corr_name = "1号坩埚"
         if self._table_ref:
@@ -418,16 +408,9 @@ class WeighWorker(QThread):
 
     # ===== 重新称量（独立封装）=====
     def _reweigh_tare(self):
-        """重新称量-准备阶段: 只做机械动作和发送校正值，不称任何坩埚"""
+        """重新称量-准备阶段: 只做机械动作，不称任何坩埚"""
         _log("重新称量准备阶段")
         self._send_long_duration_cmd(CMD.CLOSE_LID, desc="正在关闭炉盖")
-        corr_w = self._get_crucible_correction_weight()
-        if corr_w > 0:
-            _log("发送坩埚校正值: {:.4f}g".format(corr_w))
-            from protocol_layer import CommandBuilder, send_cmd_with_uplink_check
-            corr_cmd = CommandBuilder.build_send_weight(corr_w)
-            send_cmd_with_uplink_check(self._serial, corr_cmd, "坩埚校正值")
-            self._sleep(CMD_INTERVAL_S)
         self._send_cmd(CMD.OPEN_LID, desc="打开炉盖")
         self._send_long_duration_cmd(CMD.SAMPLE_PLATE_UP, desc="样盘上升")
         self._send_cmd(CMD.BEEPER_1S, desc="蜂鸣提示")
@@ -798,17 +781,6 @@ class WeighWorker(QThread):
             pass
         return 0.0
 
-    def _get_crucible_correction_weight(self):
-        """从 DB 读取坩埚校正值，优先分析水校正"""
-        try:
-            from db import load_params
-            p = load_params()
-            aw = float(p.get("aw_corr", 0.0))
-            tw = float(p.get("tw_corr", 0.0))
-            return aw if aw > 0 else tw
-        except Exception:
-            return 0.0
-
     def _send_reset(self):
         """发送仪器复位指令（不等响应，发后不管）"""
         try:
@@ -964,21 +936,17 @@ class WeighController(QObject):
             self._worker.run_reweigh_phase2(self._valid_rows)
 
     def _stop_worker(self):
-        """安全停止 Worker 线程 — 等线程自然退出，不强制 terminate
+        """安全停止 Worker 线程 — 发停止信号后立即返回，不阻塞
 
         策略: stop() 设置 _running=False → 线程在下一个循环检查点退出。
-        最坏情况: 线程卡在 send_cmd_with_uplink_check (最长60s超时)，
-        所以 wait 时间设为 65s 兜底。不调用 terminate() 避免仪器状态混乱。
+        不调用 wait() 避免卡主线程; _on_worker_finished 回调负责清理引用。
         """
         if self._worker is None:
             return
         if self._worker.isRunning():
-            _log("等待 Worker 线程自然退出...")
+            _log("通知 Worker 线程退出...")
             self._worker.stop()
-            # 串口指令最长超时 60s，给 65s 兜底
-            if not self._worker.wait(65000):
-                _log("Worker 线程 65s 未退出（仪器可能无响应），请检查串口连接")
-                # 不 terminate，让线程继续运行直到串口超时自然结束
+            # 不 wait() 阻塞主线程; Worker 会在下次循环检查 _running 退出
         self._disconnect_worker_signals()
         self._worker = None
 
@@ -1069,9 +1037,12 @@ class WeighController(QObject):
 
     def stop(self):
         self._stop_worker()
-        # 结束称量时发送复位指令
+        # 结束称重时先解除称重状态，再发复位指令
         if self._serial_mgr and self._serial_mgr.is_connected:
             from protocol_layer import CommandBuilder, CMD
+            cmd_exit = CommandBuilder.build_command(CMD.EXIT_WEIGH_MODE)
+            self._serial_mgr.send(cmd_exit)
+            _log("结束称量, 发送解除称重状态")
             cmd = CommandBuilder.build_command(CMD.RESET)
             self._serial_mgr.send(cmd)
             _log("结束称量, 发送仪器复位")

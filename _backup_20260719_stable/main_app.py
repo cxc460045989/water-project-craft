@@ -928,6 +928,7 @@ class MoistureAnalyzer(QMainWindow):
             return
 
         dlg = WeighDialog(self)
+        dlg.enable_cancel(True)
         ctrl = WeighController(self)
         ctrl.set_table(self._table)
         ctrl.set_serial_manager(self.serial_mgr)
@@ -1613,6 +1614,7 @@ class MoistureAnalyzer(QMainWindow):
                     return
 
                 dlg = WeighDialog(self)
+                dlg.enable_cancel(True)
                 ctrl = WeighController(self)
                 ctrl.set_table(self._table)
                 ctrl.set_serial_manager(self.serial_mgr)
@@ -1674,6 +1676,7 @@ class MoistureAnalyzer(QMainWindow):
                 return
 
             dlg = WeighDialog(self)
+            dlg.enable_cancel(True)
             ctrl = WeighController(self)
             ctrl.set_table(self._table)
             ctrl.set_serial_manager(self.serial_mgr)
@@ -1798,6 +1801,7 @@ class MoistureAnalyzer(QMainWindow):
             # ---- 4. 禁用按钮，创建共用弹窗 ----
             self.btn_append.setEnabled(False)
             dlg = WeighDialog(self)
+            dlg.enable_cancel(True)
 
             # ============================================================
             # 阶段1: 单坩埚称量（AppendSampleWorker）
