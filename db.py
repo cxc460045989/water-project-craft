@@ -111,6 +111,8 @@ def _init_db(conn):
             样重 REAL,
             检查性干燥重 REAL,
             干燥后重 REAL,
+            原始检查性干燥重 REAL,
+            原始干燥重 REAL,
             水分 REAL,
             平均水分 REAL,
             精密度 REAL,
@@ -174,6 +176,15 @@ def _init_db(conn):
         pass
     try:
         cur.execute("ALTER TABLE params ADD COLUMN admin_password TEXT DEFAULT '1234'")
+    except sqlite3.OperationalError:
+        pass
+    # v2: 原始干燥重量列（不丢失校正前的原始数据）
+    try:
+        cur.execute("ALTER TABLE experiment_results ADD COLUMN 原始检查性干燥重 REAL")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        cur.execute("ALTER TABLE experiment_results ADD COLUMN 原始干燥重 REAL")
     except sqlite3.OperationalError:
         pass
 
@@ -581,7 +592,11 @@ def save_experiment_result(实验ID, 批次号, 试验日期, 坩埚位号,
 
 
 def save_experiment_results_batch(results_list):
-    """批量写入最终实验结果 — 键号=(实验ID, 坩埚位号)唯一, 重复则覆盖"""
+    """批量写入最终实验结果 — 键号=(实验ID, 坩埚位号)唯一
+
+    首次 INSERT 时记录批次号和试验日期作为键号;
+    后续 UPDATE 时只更新结果数据, 保留首次键号不覆盖。
+    """
     if not results_list:
         return
     conn = get_conn()
@@ -594,20 +609,22 @@ def save_experiment_results_batch(results_list):
             (eid, pos)
         ).fetchone()
         if existing:
-            # 覆盖已有记录
+            # 覆盖已有记录 — 保留首次键号(批次号/试验日期), 只更新结果数据
             conn.execute("""
                 UPDATE experiment_results SET
-                    批次号=?, 试验日期=?, 样品名=?, 模式=?,
+                    样品名=?, 模式=?,
                     坩埚重=?, 样重=?, 检查性干燥重=?, 干燥后重=?,
+                    原始检查性干燥重=?, 原始干燥重=?,
                     水分=?, 平均水分=?, 精密度=?,
                     分析水温度=?, 分析水时间=?, 全水温度=?, 全水时间=?,
-                    测试单位=?, 化验员=?
+                    测试单位=?, 化验员=?,
+                    完成时间=datetime('now','localtime')
                 WHERE id=?
             """, (
-                r.get("批次号"), r.get("试验日期"),
                 r.get("样品名"), r.get("模式"),
                 r.get("坩埚重"), r.get("样重"),
                 r.get("检查性干燥重"), r.get("干燥后重"),
+                r.get("原始检查性干燥重"), r.get("原始干燥重"),
                 r.get("水分"), r.get("平均水分"), r.get("精密度"),
                 r.get("分析水温度"), r.get("分析水时间"),
                 r.get("全水温度"), r.get("全水时间"),
@@ -619,14 +636,16 @@ def save_experiment_results_batch(results_list):
                 INSERT INTO experiment_results
                     (实验ID, 批次号, 试验日期, 坩埚位号, 样品名, 模式,
                      坩埚重, 样重, 检查性干燥重, 干燥后重,
+                     原始检查性干燥重, 原始干燥重,
                      水分, 平均水分, 精密度,
                      分析水温度, 分析水时间, 全水温度, 全水时间, 测试单位, 化验员)
-                VALUES (?,?,?,?,?,?, ?,?,?,?, ?,?,?, ?,?,?,?, ?,?)
+                VALUES (?,?,?,?,?,?, ?,?,?,?, ?,?, ?,?,?, ?,?,?,?, ?,?)
             """, (
                 eid, r.get("批次号"), r.get("试验日期"),
                 pos, r.get("样品名"), r.get("模式"),
                 r.get("坩埚重"), r.get("样重"),
                 r.get("检查性干燥重"), r.get("干燥后重"),
+                r.get("原始检查性干燥重"), r.get("原始干燥重"),
                 r.get("水分"), r.get("平均水分"), r.get("精密度"),
                 r.get("分析水温度"), r.get("分析水时间"),
                 r.get("全水温度"), r.get("全水时间"),
@@ -656,7 +675,7 @@ def query_experiment_results(start_date=None, end_date=None,
         sql += ' AND "试验日期" <= ?'
         params.append(end_date)
     if name_filter:
-        sql += ' AND "样品名" LIKE ?'
+        sql += ' AND LOWER("样品名") LIKE LOWER(?)'
         params.append("%" + name_filter + "%")
     sql += " ORDER BY id DESC LIMIT ?"
     params.append(limit)

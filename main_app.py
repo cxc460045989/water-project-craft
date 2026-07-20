@@ -569,33 +569,15 @@ class MoistureAnalyzer(QMainWindow):
             logger.info("[TEST] 测试完成, 表格已刷新")
 
     def _on_const_check_result(self, row_idx, passed, dry_weight, check_dry):
-        """恒重检查结果回调
+        """恒重检查结果回调 — 仅更新进度提示文本
 
-        不通过时: 干燥重量已前移到检查性干燥重量(col4), 清空干燥重量(col5)
-        等下一轮称重结果回来再填入, 视觉上体现"待称重"状态。
+        col4/col5 表格更新由 _do_weighing 开头的前移逻辑统一处理。
         """
         diff = abs(dry_weight - check_dry)
         status = "✓ 通过" if passed else "✗ 不通过"
         self.progress_data.setText(
             "<span style='color:#2B579A;font-weight:bold'>测试进度：</span>恒重检查 样位%d: %s (本次=%.4f 上次=%.4f diff=%.4f)"
             % (row_idx + 1, status, dry_weight, check_dry, diff))
-
-        if not passed and self._table and row_idx < self._table.rowCount():
-            # 干燥重前移至 col4 后, 清空 col5(干燥重量) 提示待称重
-            from PySide2.QtWidgets import QTableWidgetItem
-            from PySide2.QtCore import Qt
-            item = self._table.item(row_idx, 4)
-            if item is None:
-                item = QTableWidgetItem()
-                item.setTextAlignment(Qt.AlignCenter)
-                item.setFlags(item.flags() & ~Qt.ItemIsEditable)
-                self._table.setItem(row_idx, 4, item)
-            item.setText("{:.4f}".format(check_dry))
-            # 清空干燥重量列
-            item5 = self._table.item(row_idx, 5)
-            if item5 is not None:
-                item5.setText("")
-            logger.info("[TEST] 恒重前移 row=%d col4←%.4f col5清空" % (row_idx, check_dry))
 
     def _on_test_weigh_result(self, row_idx, dry_weight, phase):
         """测试称重结果实时回填表格: 检查性→col4, 干燥→col5"""
@@ -772,10 +754,10 @@ class MoistureAnalyzer(QMainWindow):
 
     def _build_table(self, pl):
         hd = ["样品名称","模式","坩埚重(g)","样品重(g)",
-               "检查性干燥重量(g)","干燥重量(g)","水分(%)","平均值(%)","精密度(%)"]
+               "检查性干燥重量(g)","干燥重量(g)","水分(%)","平均值(%)"]
         t = QTableWidget()
         sc = load_params().get("sample_count", 24) or 24
-        t.setColumnCount(9); t.setHorizontalHeaderLabels(hd); t.setRowCount(int(sc))  # 总行数=样位数量，第0行校正坩埚
+        t.setColumnCount(8); t.setHorizontalHeaderLabels(hd); t.setRowCount(int(sc))  # 总行数=样位数量，第0行校正坩埚
         t.setAlternatingRowColors(True)
         hf = QFont("Microsoft YaHei", 12, QFont.Bold)
         t.horizontalHeader().setFont(hf)
@@ -910,27 +892,6 @@ class MoistureAnalyzer(QMainWindow):
 
 
 
-    def save_all_samples_to_db(self):
-        from db import save_all_samples
-        data_list = []
-        col_map = {0: "name", 1: "mode", 2: "tare_weight", 3: "sample_weight",
-                   4: "check_dry_weight", 5: "dry_weight", 6: "moisture",
-                   7: "avg_moisture", 8: "precision_val"}
-        for r in range(0, self._table.rowCount()):
-            row_data = {}
-            has_data = False
-            for c in range(self._table.columnCount()):
-                item = self._table.item(r, c)
-                if item and item.text().strip():
-                    row_data[col_map[c]] = item.text().strip()
-                    has_data = True
-            if has_data:
-                data_list.append(row_data)
-        if data_list:
-            save_all_samples(data_list)
-
-
-
     # ---- 重新称量回退入口 ----
     def _on_reweigh_flow(self):
         """重新称量：直接关盖→称量不合格样品，跳过准备阶段和放样提示"""
@@ -1031,9 +992,14 @@ class MoistureAnalyzer(QMainWindow):
             item = self._table.item(row, col)
             if item is None: return
             val = item.text().strip()
+            # 样品名称: 去掉所有空格（前后+中间）并回写表格
+            if col == 0 and val:
+                val = val.replace(" ", "").replace("\u3000", "")  # 半角+全角空格
+                if item.text() != val:
+                    item.setText(val)
             col_map = {0: "name", 1: "mode", 2: "tare_weight", 3: "sample_weight",
                        4: "check_dry_weight", 5: "dry_weight", 6: "moisture",
-                       7: "avg_moisture", 8: "precision_val"}
+                       7: "avg_moisture"}
             if col not in col_map: return
             logger.debug("[DB-CELL] _on_cell_changed: row=" + str(row) + " col=" + str(col) + " key=" + col_map[col] + " val=" + val)
             # 同时写入 experiment_samples 和 samples（兼容）
@@ -1052,7 +1018,7 @@ class MoistureAnalyzer(QMainWindow):
         data_list = []
         col_map = {0: "name", 1: "mode", 2: "tare_weight", 3: "sample_weight",
                    4: "check_dry_weight", 5: "dry_weight", 6: "moisture",
-                   7: "avg_moisture", 8: "precision_val"}
+                   7: "avg_moisture"}
         for r in range(0, self._table.rowCount()):
             row_data = {}
             has_data = False
@@ -1184,23 +1150,273 @@ class MoistureAnalyzer(QMainWindow):
                         i7.setTextAlignment(Qt.AlignCenter)
                         i7.setFlags(i7.flags() & ~Qt.ItemIsEditable)
                         t.setItem(r, 7, i7)
-                prec = row.get("precision_val")
-                if prec is not None:
-                    mode = row.get("mode", "") or ""
-                    fmt = "{:.1f}" if mode == "全水" else "{:.2f}"
-                    item8 = t.item(r, 8)
-                    if item8 is not None:
-                        item8.setText(fmt.format(prec))
-                    else:
-                        from PySide2.QtWidgets import QTableWidgetItem
-                        from PySide2.QtCore import Qt
-                        i8 = QTableWidgetItem(fmt.format(prec))
-                        i8.setTextAlignment(Qt.AlignCenter)
-                        i8.setFlags(i8.flags() & ~Qt.ItemIsEditable)
-                        t.setItem(r, 8, i8)
         except Exception as e:
             logger.debug("[RESTORE] ERROR: " + str(e))
     
+    def _on_manual_save(self):
+        """手动存数: 扫描表格中完整实验数据行, 存入 experiment_results 表
+
+        完整数据判断: 除"检查性干燥重量"(col4)外, 其余列均须存在。
+        存入后可在"查询数据"中检索。
+        """
+        from PySide2.QtWidgets import QMessageBox
+        from db import (ensure_experiment, load_params, load_experiment,
+                       save_experiment_results_batch)
+        import datetime as _dt
+
+        if self._table is None:
+            QMessageBox.warning(self, "提示", "表格未初始化")
+            return
+
+        # 收集完整行数据
+        complete_rows = []
+
+        for r in range(1, self._table.rowCount()):  # 跳过第0行(校正坩埚)
+            name_item = self._table.item(r, 0)
+            mode_item = self._table.item(r, 1)
+            tare_item = self._table.item(r, 2)
+            sample_item = self._table.item(r, 3)
+            # col4 = 检查性干燥重(可选)
+            check_dry_item = self._table.item(r, 4)
+            dry_item = self._table.item(r, 5)
+            moisture_item = self._table.item(r, 6)
+            avg_item = self._table.item(r, 7)
+
+            # 提取文本值
+            name = name_item.text().strip() if name_item and name_item.text() else ""
+            mode = mode_item.text().strip() if mode_item and mode_item.text() else ""
+            tare_text = tare_item.text().strip() if tare_item and tare_item.text() else ""
+            sample_text = sample_item.text().strip() if sample_item and sample_item.text() else ""
+            dry_text = dry_item.text().strip() if dry_item and dry_item.text() else ""
+            moisture_text = moisture_item.text().strip() if moisture_item and moisture_item.text() else ""
+            avg_text = avg_item.text().strip() if avg_item and avg_item.text() else ""
+
+            # 1. 先判断这行有没有数据：样品名+坩埚重+样重至少有一项有值
+            has_data = bool(name or tare_text or sample_text)
+            if not has_data:
+                continue  # 空行直接跳过
+
+            # 2. 有数据的行，检查是否完整（除col4外，col0/1/2/3/5/6/7齐全）
+            required = [name, mode, tare_text, sample_text, dry_text, moisture_text, avg_text]
+            if all(v for v in required):
+                try:
+                    check_dry_text = check_dry_item.text().strip() if check_dry_item and check_dry_item.text() else None
+                    complete_rows.append({
+                        "row_idx": r,
+                        "name": name,
+                        "mode": mode,
+                        "tare_weight": float(tare_text),
+                        "sample_weight": float(sample_text),
+                        "check_dry_weight": float(check_dry_text) if check_dry_text else None,
+                        "dry_weight": float(dry_text),
+                        "moisture": float(moisture_text),
+                        "avg_moisture": float(avg_text) if avg_text else None,
+                    })
+                except (ValueError, TypeError) as e:
+                    pass  # 数值异常的行跳过，不阻塞整体存数
+
+        if not complete_rows:
+            QMessageBox.information(self, "提示", "表格中没有可存储的完整数据。\n请检查有数据的行是否填写完整。")
+            return
+
+        # 获取实验上下文
+        eid = ensure_experiment()
+        params = load_params()
+        exp_record, _ = load_experiment(eid)
+        batch_no = _dt.datetime.now().strftime("%Y%m%d_%H%M%S")
+        test_date = _dt.datetime.now().strftime("%Y-%m-%d")
+        unit = (exp_record or {}).get("unit", "") or params.get("unit", "")
+        tech = (exp_record or {}).get("tech", "") or params.get("hy_current", "")
+
+        # 构建结果列表
+        results = []
+        for row in complete_rows:
+            mode = row["mode"]
+            is_aw = (mode == "分析水")
+            results.append({
+                "实验ID": eid,
+                "批次号": batch_no,
+                "试验日期": test_date,
+                "坩埚位号": str(row["row_idx"]),
+                "样品名": row["name"],
+                "模式": mode,
+                "坩埚重": row["tare_weight"],
+                "样重": row["sample_weight"],
+                "检查性干燥重": row["check_dry_weight"],
+                "干燥后重": row["dry_weight"],
+                "原始检查性干燥重": row.get("check_dry_weight"),
+                "原始干燥重": row["dry_weight"],
+                "水分": row["moisture"],
+                "平均水分": row["avg_moisture"],
+                "精密度": None,
+                "分析水温度": params.get("aw_temp") if is_aw else None,
+                "分析水时间": params.get("aw_time") if is_aw else None,
+                "全水温度": params.get("tw_temp") if not is_aw else None,
+                "全水时间": params.get("tw_time") if not is_aw else None,
+                "测试单位": unit,
+                "化验员": tech,
+            })
+
+        try:
+            save_experiment_results_batch(results)
+        except Exception as e:
+            logger.error("[MANUAL_SAVE] 存数失败: %s" % str(e))
+            QMessageBox.warning(self, "存数失败", "写入数据库时出错:\n%s" % str(e))
+            return
+
+        # 同时更新 experiment_samples 的水分/平均值字段
+        try:
+            from db import upsert_experiment_sample
+            for row in complete_rows:
+                upsert_experiment_sample(eid, row["row_idx"],
+                                          moisture=row["moisture"],
+                                          avg_moisture=row["avg_moisture"])
+        except Exception as e:
+            logger.error("[MANUAL_SAVE] 同步 experiment_samples 失败: %s" % str(e))
+
+        # 汇总提示
+        detail_parts = []
+        aw_count = sum(1 for r in complete_rows if r["mode"] == "分析水")
+        tw_count = sum(1 for r in complete_rows if r["mode"] == "全水")
+        if aw_count:
+            detail_parts.append("分析水 %d 条" % aw_count)
+        if tw_count:
+            detail_parts.append("全水 %d 条" % tw_count)
+
+        msg = "已成功存储 %d 条实验数据到数据库。\n(%s)\n\n可在「查询数据」中检索。" % (
+            len(complete_rows), "、".join(detail_parts))
+
+        QMessageBox.information(self, "存数完成", msg)
+        logger.info("[MANUAL_SAVE] 手动存数完成: experiment_id=%d, 存储%d条 (%s)"
+                     % (eid, len(complete_rows), "、".join(detail_parts) if detail_parts else "无"))
+
+    def _on_recalculate(self):
+        """重新计算: 用原始干燥重量重新计算水分→平均值→反推显示干燥重
+
+        数据源: experiment_results 中的 原始检查性干燥重 和 原始干燥重
+        公式:   m1 = min(原始检查性干燥重, 原始干燥重)
+               水分 = (样重 - m1) / 样重 * 100
+               银行舍入 → 校正 → 反推显示干燥重
+        """
+        from PySide2.QtWidgets import QMessageBox
+        from confirm_dialog import ConfirmDialog
+
+        if not ConfirmDialog.confirm(self,
+                "确定要重新计算吗？",
+                title="重新计算", danger=False):
+            return
+
+        from db import ensure_experiment, load_params
+        from decimal import Decimal, ROUND_HALF_EVEN
+
+        eid = ensure_experiment()
+        params = load_params()
+
+        # 加载当前实验的所有 experiment_results 记录
+        from db import get_conn
+        conn = get_conn()
+        rows = conn.execute(
+            'SELECT * FROM experiment_results WHERE "实验ID"=? ORDER BY id', (eid,)
+        ).fetchall()
+        conn.close()
+
+        if not rows:
+            QMessageBox.information(self, "提示",
+                "当前实验没有已存储的数据。\n请先完成实验或手动存数后再重新计算。")
+            return
+
+        # 银行舍入
+        def bankers_round(value, decimals):
+            d = Decimal(str(value))
+            q = Decimal('0.' + '0' * decimals)
+            return float(d.quantize(q, rounding=ROUND_HALF_EVEN))
+
+        # 为每个模式组计算
+        aw_count = 0
+        tw_count = 0
+
+        for mode in ("分析水", "全水"):
+            mode_rows = [dict(r) for r in rows if r["模式"] == mode]
+            if not mode_rows:
+                continue
+
+            decimals = 2 if mode == "分析水" else 1
+            corr = float(params.get("aw_corr", 0) if mode == "分析水" else params.get("tw_corr", 0))
+            temp_val = params.get("aw_temp", 105) if mode == "分析水" else params.get("tw_temp", 105)
+            time_val = params.get("aw_time", 60) if mode == "分析水" else params.get("tw_time", 60)
+
+            moistures = []
+            recalc_data = []
+            for r in mode_rows:
+                sample_w = r.get("样重")
+                raw_check = r.get("原始检查性干燥重")
+                raw_dry = r.get("原始干燥重")
+
+                if sample_w is None or sample_w == 0:
+                    continue
+
+                # 用原始值作为数据源重新计算
+                m = Decimal(str(sample_w))
+                cd = Decimal(str(raw_check)) if raw_check is not None else None
+                dd = Decimal(str(raw_dry)) if raw_dry is not None else Decimal('0')
+                m1 = cd if (cd is not None and cd < dd) else dd
+
+                moisture_raw = float((m - m1) / m * Decimal('100'))
+                moisture = bankers_round(moisture_raw, decimals)
+                moisture_corrected = bankers_round(moisture - corr, decimals)
+
+                # 反推显示干燥重
+                display_dry = float(m * (Decimal('1') - Decimal(str(moisture_corrected)) / Decimal('100')))
+                display_dry = bankers_round(display_dry, 4)
+
+                moistures.append(moisture_corrected)
+                recalc_data.append((r, moisture_corrected, display_dry))
+                logger.info("[RECALC] row=%s mode=%s m=%.4f m1=%.4f raw_m=%.2f→校正%.*f%% display_dry=%.4f"
+                             % (r.get("坩埚位号"), mode, sample_w, float(m1),
+                                moisture_raw, decimals, moisture_corrected, display_dry))
+
+            if not moistures:
+                continue
+
+            avg_m = bankers_round(sum(moistures) / len(moistures), decimals)
+            prec = bankers_round(max(moistures) - min(moistures), decimals) if len(moistures) >= 2 else 0.0
+
+            logger.info("[RECALC] %s 完成: samples=%d avg=%.*f%% prec=%.*f%%"
+                         % (mode, len(moistures), decimals, avg_m, decimals, prec))
+
+            # 只更新 experiment_samples（表格数据源），不写 experiment_results
+            from db import upsert_experiment_sample
+            for r, mst, dry in recalc_data:
+                row_idx = int(r.get("坩埚位号", "0"))
+                upsert_experiment_sample(eid, row_idx,
+                                          moisture=mst,
+                                          avg_moisture=avg_m,
+                                          check_dry_weight=dry,
+                                          dry_weight=dry)
+
+            aw_count = aw_count + len(recalc_data) if mode == "分析水" else aw_count
+            tw_count = tw_count + len(recalc_data) if mode == "全水" else tw_count
+
+        if aw_count == 0 and tw_count == 0:
+            QMessageBox.information(self, "提示", "没有可重新计算的数据。")
+            return
+
+        # 刷新主表格
+        if self._table:
+            self._restore_samples_from_db(self._table)
+
+        parts = []
+        if aw_count:
+            parts.append("分析水 %d 条" % aw_count)
+        if tw_count:
+            parts.append("全水 %d 条" % tw_count)
+
+        QMessageBox.information(self, "重新计算完成",
+            "已重新计算 %d 条数据。\n(%s)\n\n如需更新实验数据库，请点击「手动存数」。"
+            % (aw_count + tw_count, "、".join(parts)))
+        logger.info("[RECALC] 重新计算完成: experiment_id=%d, %d条"
+                     % (eid, aw_count + tw_count))
+
     def _on_cell_double_clicked(self, row, col):
         tbl = self._table
         if tbl is None:
@@ -1724,6 +1940,12 @@ class MoistureAnalyzer(QMainWindow):
                 conn.execute("DELETE FROM samples")
                 conn.commit()
                 conn.close()
+
+        elif name == "手动存数":
+            self._on_manual_save()
+
+        elif name == "重新计算":
+            self._on_recalculate()
 
 
 def main():

@@ -188,6 +188,7 @@ class TestWorker(QObject):
         self._initial_weights = {}
         self._tare_offset = 0.0       # 坩埚校正差值
         self._table_ref = None         # 主表格引用
+        self._passed_samples = set()   # 恒重已通过的 row_idx, 后续称重跳过
 
         # 10s交替指令: 控温/开始测试
         self._cmd_is_temp = False
@@ -422,6 +423,7 @@ class TestWorker(QObject):
             return
 
         self._dry_cycle = 0
+        self._passed_samples.clear()
         self._temp_target = self.cfg.aw_temp
         r = self.cfg.aw_time
         self._hold_target = r if SPEED_MODE else r * 60
@@ -451,6 +453,7 @@ class TestWorker(QObject):
             return
 
         self._dry_cycle = 0
+        self._passed_samples.clear()
         self._temp_target = self.cfg.tw_temp
         r = self.cfg.tw_time
         self._hold_target = r if SPEED_MODE else r * 60
@@ -788,6 +791,8 @@ class TestWorker(QObject):
                         "样重": s.get("sample_weight"),
                         "检查性干燥重": self._bankers_round(s["_display_dry"], 4),
                         "干燥后重": self._bankers_round(s["_display_dry"], 4),
+                        "原始检查性干燥重": s.get("check_dry_weight"),
+                        "原始干燥重": s.get("dry_weight"),
                         "水分": s["_moisture"],
                         "平均水分": avg_m,
                         "精密度": prec,
@@ -983,45 +988,53 @@ class TestWorker(QObject):
         mode_name = "分析水" if self._is_aw else "全水"
 
         # ---- ≥第2轮: 称重前先将上轮干燥重前移至检查性干燥重 ----
+        # 已通过恒重检查的样品跳过前移，保持数据不变
         if self._dry_cycle >= 2:
             rows_to_shift = [(0, "校正坩埚")] + [(r, n) for r, n, _, _ in self._samples]
+            rows_to_shift = [(r, n) for r, n in rows_to_shift if r not in self._passed_samples]
             for row_idx, _name in rows_to_shift:
                 prev_dry = self._load_dry_weight(row_idx)
                 if prev_dry is not None:
                     self._save_check_dry_weight(row_idx, prev_dry)
                     self.sig_initial_weight.emit(row_idx, 4, prev_dry)
-            _log("干燥重→检查性干燥重 前移完成, %d 行" % len(rows_to_shift))
+            _log("干燥重→检查性干燥重 前移完成, %d 行 (跳过已通过: %s)" %
+                 (len(rows_to_shift), sorted(self._passed_samples) if self._passed_samples else "无"))
 
         # ---- 1. 先称校正坩埚(1号位)，每轮重新计算天平漂移偏移 ----
         if not self._running:
             return
-        crucible_known = self._get_sample_from_db(0)
-        crucible_dry = self._weigh_single(0, "校正坩埚", 0.0, desc="校正坩埚(%s)" % col_name,
-                                          progress_cb=lambda w: self.sig_status_msg.emit(
-                                              "正在称重1号样品重量：%.4fg" % w),
-                                          apply_offset=False)
-        if crucible_dry is not None:
-            if crucible_known and crucible_known > 0.0001:
-                self._tare_offset = round(crucible_dry - crucible_known, 4)
-                _log("校正坩埚 row=0 样重=%.4f 实测=%.4f 校正偏移=%.4f (第%d轮)" %
-                     (crucible_known, crucible_dry, self._tare_offset, self._dry_cycle))
+        if 0 not in self._passed_samples:
+            crucible_known = self._get_tare_from_db(0)
+            crucible_dry = self._weigh_single(0, "校正坩埚", 0.0, desc="校正坩埚(%s)" % col_name,
+                                              progress_cb=lambda w: self.sig_status_msg.emit(
+                                                  "正在称重1号样品重量：%.4fg" % w),
+                                              apply_offset=False)
+            if crucible_dry is not None:
+                if crucible_known and crucible_known > 0.0001:
+                    self._tare_offset = round(crucible_dry - crucible_known, 4)
+                    _log("校正坩埚 row=0 坩埚重=%.4f 实测=%.4f 校正偏移=%.4f (第%d轮)" %
+                         (crucible_known, crucible_dry, self._tare_offset, self._dry_cycle))
+                else:
+                    self._tare_offset = 0.0
+                    _log("校正坩埚 row=0 实测=%.4f 无坩埚重(DB=%.4f), 偏移量=0" %
+                         (crucible_dry, crucible_known))
+                self.sig_weigh_result.emit(0, crucible_dry, self._phase)
+                crucible_tare = self._get_tare_from_db(0)
+                self._save_weigh_result(0, "校正坩埚", "", 0.0,
+                                        int(round(crucible_dry * 10000)) + 1000000,
+                                        crucible_dry, crucible_tare, self._tare_offset)
+                results.append((0, crucible_dry))
             else:
                 self._tare_offset = 0.0
-                _log("校正坩埚 row=0 实测=%.4f 无样重(DB=%.4f), 偏移量=0" %
-                     (crucible_dry, crucible_known))
-            self.sig_weigh_result.emit(0, crucible_dry, self._phase)
-            crucible_tare = self._get_tare_from_db(0)
-            self._save_weigh_result(0, "校正坩埚", "", 0.0,
-                                    int(round(crucible_dry * 10000)) + 1000000,
-                                    crucible_dry, crucible_tare, self._tare_offset)
-            results.append((0, crucible_dry))
-        else:
-            self._tare_offset = 0.0
 
         # ---- 2. 称量所有样品 ----
         for idx, (row_idx, name, mode_str, sample_weight) in enumerate(self._samples):
             if not self._running:
                 return
+            # 恒重已通过的样品跳过称重
+            if row_idx in self._passed_samples:
+                _log("跳过已通过样品 row=%d name=%s" % (row_idx, name))
+                continue
             tare = self._get_tare_from_db(row_idx)
             dry_weight = self._weigh_single(row_idx, name, tare, desc=col_name,
                                             progress_cb=lambda w, r=row_idx:
@@ -1096,10 +1109,10 @@ class TestWorker(QObject):
                   "通过" if passed else "不通过"))
             if not passed:
                 all_passed = False
-                # 干燥重前移: 用本次干燥重量覆盖检查性干燥重量
-                self._save_check_dry_weight(row_idx, dry_weight)
-                self.sig_initial_weight.emit(row_idx, 4, dry_weight)
-                _log("干燥重前移 row=%d check_dry←%.4f" % (row_idx, dry_weight))
+                # 恒重不通过，不做前移 — 前移由下一轮 _do_weighing 开头统一执行
+            else:
+                self._passed_samples.add(row_idx)
+                _log("恒重通过 row=%d, 后续称重跳过" % row_idx)
 
         if all_passed:
             _log("全部样品恒重检查通过")
