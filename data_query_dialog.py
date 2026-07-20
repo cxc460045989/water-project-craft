@@ -10,7 +10,7 @@ from PySide2.QtWidgets import (
     QGroupBox, QPushButton, QLabel, QLineEdit, QCheckBox, QTableWidget, QTableWidgetItem,
     QHeaderView, QAbstractItemView, QFileDialog, QMessageBox,
 )
-from PySide2.QtCore import Qt
+from PySide2.QtCore import Qt, QTimer
 from PySide2.QtGui import QFont
 from button_styles import apply_button_types
 from logging_util import logger
@@ -100,6 +100,8 @@ class DataQueryDialog(QDialog):
         """)
         self._build_ui()
         self.resize(960, 560)
+        # 打开时默认查询当天数据
+        QTimer.singleShot(50, self._on_search)
 
     # ========== UI 构建 ==========
 

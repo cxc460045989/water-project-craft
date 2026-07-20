@@ -694,7 +694,7 @@ class TestWorker(QObject):
           取 min(检查性干燥重, 干燥后重) 记作 m1
           水分 = (m - m1) / m * 100
           全水保留1位小数, 分析水保留2位小数
-          结果校正: 水分 - 校正值(%), 反算干燥重填入结果表
+          结果校正: 水分 + 校正值(%), 反算干燥重填入结果表
           原始数据(experiment_samples)不改变
         """
         try:
@@ -751,8 +751,8 @@ class TestWorker(QObject):
                     # 2. 银行舍入
                     moisture = self._bankers_round(moisture_raw, decimals)
 
-                    # 3. 应用校正值
-                    moisture_corrected = self._bankers_round(moisture - corr, decimals)
+                    # 3. 应用校正值: 水分 + 校正值 (校正值为负则相加即相减)
+                    moisture_corrected = self._bankers_round(moisture + corr, decimals)
 
                     # 4. 反算干燥重(用于结果显示, 原始数据不改变)
                     from decimal import Decimal
@@ -760,10 +760,24 @@ class TestWorker(QObject):
                     display_dry = float(m * (Decimal('1') - Decimal(str(moisture_corrected)) / Decimal('100')))
                     display_dry = self._bankers_round(display_dry, 4)
 
+                    # 4a. 保留原始检查性/干燥差值, 拆分反算值
+                    orig_check = s.get("check_dry_weight") or 0
+                    orig_dry_val = s.get("dry_weight") or 0
+                    diff = round(orig_check - orig_dry_val, 4)
+                    if orig_check <= orig_dry_val:
+                        # check 是 m₁, display_dry 对应检查性
+                        display_check = display_dry
+                        display_dry_result = self._bankers_round(display_dry + abs(diff), 4)
+                    else:
+                        # dry 是 m₁, display_dry 对应干燥
+                        display_dry_result = display_dry
+                        display_check = self._bankers_round(display_dry + abs(diff), 4)
+
                     moistures.append(moisture_corrected)
                     s["_moisture"] = moisture_corrected
                     s["_m1"] = m1
-                    s["_display_dry"] = display_dry
+                    s["_display_check"] = display_check
+                    s["_display_dry"] = display_dry_result
 
                     _log("水分计算 row=%s mode=%s m=%.4f m1=%.4f moisture=%.4f→校正%.*f%%"
                          % (s.get("row_idx", "?"), mode, sample_w, m1,
@@ -789,8 +803,8 @@ class TestWorker(QObject):
                         "模式": mode,
                         "坩埚重": s.get("tare_weight"),
                         "样重": s.get("sample_weight"),
-                        "检查性干燥重": self._bankers_round(s["_display_dry"], 4),
-                        "干燥后重": self._bankers_round(s["_display_dry"], 4),
+                        "检查性干燥重": s["_display_check"],
+                        "干燥后重": s["_display_dry"],
                         "原始检查性干燥重": s.get("check_dry_weight"),
                         "原始干燥重": s.get("dry_weight"),
                         "水分": s["_moisture"],
@@ -827,7 +841,9 @@ class TestWorker(QObject):
                         upsert_experiment_sample(eid, s["row_idx"],
                                                   moisture=s["_moisture"],
                                                   avg_moisture=avg_m,
-                                                  precision_val=prec)
+                                                  precision_val=prec,
+                                                  orig_check_dry_weight=s.get("check_dry_weight"),
+                                                  orig_dry_weight=s.get("dry_weight"))
                 _log("finalize: 已同步 %d 条水分数据到 experiment_samples" % len(results))
 
             update_experiment_status(eid, "done")
@@ -1096,6 +1112,8 @@ class TestWorker(QObject):
         # 第2轮起: 比较检查性干燥重量 vs 干燥重量
         all_passed = True
         for row_idx, dry_weight in weigh_results:
+            if row_idx == 0:
+                continue  # 校正坩埚不参与恒重检查
             check_dry = self._load_check_dry_weight(row_idx)
             if check_dry is None:
                 _log("缺少检查性干燥重量 row=%d, 跳过" % row_idx)

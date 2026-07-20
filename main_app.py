@@ -1292,7 +1292,7 @@ class MoistureAnalyzer(QMainWindow):
     def _on_recalculate(self):
         """重新计算: 用原始干燥重量重新计算水分→平均值→反推显示干燥重
 
-        数据源: experiment_results 中的 原始检查性干燥重 和 原始干燥重
+        数据源: experiment_samples 中的 orig_check_dry_weight / orig_dry_weight
         公式:   m1 = min(原始检查性干燥重, 原始干燥重)
                水分 = (样重 - m1) / 样重 * 100
                银行舍入 → 校正 → 反推显示干燥重
@@ -1305,21 +1305,16 @@ class MoistureAnalyzer(QMainWindow):
                 title="重新计算", danger=False):
             return
 
-        from db import ensure_experiment, load_params
+        from db import ensure_experiment, load_params, load_experiment_samples
         from decimal import Decimal, ROUND_HALF_EVEN
 
         eid = ensure_experiment()
         params = load_params()
 
-        # 加载当前实验的所有 experiment_results 记录
-        from db import get_conn
-        conn = get_conn()
-        rows = conn.execute(
-            'SELECT * FROM experiment_results WHERE "实验ID"=? ORDER BY id', (eid,)
-        ).fetchall()
-        conn.close()
+        # 加载当前实验的原始称重数据
+        samples = load_experiment_samples(eid)
 
-        if not rows:
+        if not samples:
             QMessageBox.information(self, "提示",
                 "当前实验没有已存储的数据。\n请先完成实验或手动存数后再重新计算。")
             return
@@ -1335,21 +1330,24 @@ class MoistureAnalyzer(QMainWindow):
         tw_count = 0
 
         for mode in ("分析水", "全水"):
-            mode_rows = [dict(r) for r in rows if r["模式"] == mode]
-            if not mode_rows:
+            mode_samples = [
+                s for s in samples
+                if s.get("mode") == mode
+                and s.get("sample_weight") is not None
+                and s.get("sample_weight", 0) != 0
+            ]
+            if not mode_samples:
                 continue
 
             decimals = 2 if mode == "分析水" else 1
             corr = float(params.get("aw_corr", 0) if mode == "分析水" else params.get("tw_corr", 0))
-            temp_val = params.get("aw_temp", 105) if mode == "分析水" else params.get("tw_temp", 105)
-            time_val = params.get("aw_time", 60) if mode == "分析水" else params.get("tw_time", 60)
 
             moistures = []
             recalc_data = []
-            for r in mode_rows:
-                sample_w = r.get("样重")
-                raw_check = r.get("原始检查性干燥重")
-                raw_dry = r.get("原始干燥重")
+            for s in mode_samples:
+                sample_w = s.get("sample_weight")
+                raw_check = s.get("orig_check_dry_weight")
+                raw_dry = s.get("orig_dry_weight")
 
                 if sample_w is None or sample_w == 0:
                     continue
@@ -1362,17 +1360,27 @@ class MoistureAnalyzer(QMainWindow):
 
                 moisture_raw = float((m - m1) / m * Decimal('100'))
                 moisture = bankers_round(moisture_raw, decimals)
-                moisture_corrected = bankers_round(moisture - corr, decimals)
+                moisture_corrected = bankers_round(moisture + corr, decimals)
 
-                # 反推显示干燥重
+                # 反推显示干燥重, 保留原始检查性/干燥差值拆分
                 display_dry = float(m * (Decimal('1') - Decimal(str(moisture_corrected)) / Decimal('100')))
                 display_dry = bankers_round(display_dry, 4)
 
+                orig_check = raw_check or 0
+                orig_dry_val = raw_dry or 0
+                diff = round(orig_check - orig_dry_val, 4)
+                if orig_check <= orig_dry_val:
+                    display_check = display_dry
+                    display_dry_result = bankers_round(display_dry + abs(diff), 4)
+                else:
+                    display_dry_result = display_dry
+                    display_check = bankers_round(display_dry + abs(diff), 4)
+
                 moistures.append(moisture_corrected)
-                recalc_data.append((r, moisture_corrected, display_dry))
-                logger.info("[RECALC] row=%s mode=%s m=%.4f m1=%.4f raw_m=%.2f→校正%.*f%% display_dry=%.4f"
-                             % (r.get("坩埚位号"), mode, sample_w, float(m1),
-                                moisture_raw, decimals, moisture_corrected, display_dry))
+                recalc_data.append((s, moisture_corrected, display_check, display_dry_result))
+                logger.info("[RECALC] row=%s mode=%s m=%.4f m1=%.4f raw_m=%.2f→校正%.*f%% chk=%.4f dry=%.4f diff=%.4f"
+                             % (s.get("row_idx"), mode, sample_w, float(m1),
+                                moisture_raw, decimals, moisture_corrected, display_check, display_dry_result, diff))
 
             if not moistures:
                 continue
@@ -1383,14 +1391,14 @@ class MoistureAnalyzer(QMainWindow):
             logger.info("[RECALC] %s 完成: samples=%d avg=%.*f%% prec=%.*f%%"
                          % (mode, len(moistures), decimals, avg_m, decimals, prec))
 
-            # 只更新 experiment_samples（表格数据源），不写 experiment_results
+            # 回写 experiment_samples（表格数据源），不写 experiment_results
             from db import upsert_experiment_sample
-            for r, mst, dry in recalc_data:
-                row_idx = int(r.get("坩埚位号", "0"))
+            for s, mst, chk, dry in recalc_data:
+                row_idx = s["row_idx"]
                 upsert_experiment_sample(eid, row_idx,
                                           moisture=mst,
                                           avg_moisture=avg_m,
-                                          check_dry_weight=dry,
+                                          check_dry_weight=chk,
                                           dry_weight=dry)
 
             aw_count = aw_count + len(recalc_data) if mode == "分析水" else aw_count

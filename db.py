@@ -80,6 +80,7 @@ def _init_db(conn):
             name TEXT, mode TEXT,
             tare_weight REAL, sample_weight REAL,
             check_dry_weight REAL, dry_weight REAL,
+            orig_check_dry_weight REAL, orig_dry_weight REAL,
             moisture REAL, avg_moisture REAL, precision_val REAL,
             FOREIGN KEY (experiment_id) REFERENCES experiments(id) ON DELETE CASCADE
         );
@@ -178,13 +179,13 @@ def _init_db(conn):
         cur.execute("ALTER TABLE params ADD COLUMN admin_password TEXT DEFAULT '1234'")
     except sqlite3.OperationalError:
         pass
-    # v2: 原始干燥重量列（不丢失校正前的原始数据）
+    # v2: 原始干燥重量列 — experiment_samples
     try:
-        cur.execute("ALTER TABLE experiment_results ADD COLUMN 原始检查性干燥重 REAL")
+        cur.execute("ALTER TABLE experiment_samples ADD COLUMN orig_check_dry_weight REAL")
     except sqlite3.OperationalError:
         pass
     try:
-        cur.execute("ALTER TABLE experiment_results ADD COLUMN 原始干燥重 REAL")
+        cur.execute("ALTER TABLE experiment_samples ADD COLUMN orig_dry_weight REAL")
     except sqlite3.OperationalError:
         pass
 
