@@ -569,12 +569,33 @@ class MoistureAnalyzer(QMainWindow):
             logger.info("[TEST] 测试完成, 表格已刷新")
 
     def _on_const_check_result(self, row_idx, passed, dry_weight, check_dry):
-        """恒重检查结果回调"""
+        """恒重检查结果回调
+
+        不通过时: 干燥重量已前移到检查性干燥重量(col4), 清空干燥重量(col5)
+        等下一轮称重结果回来再填入, 视觉上体现"待称重"状态。
+        """
         diff = abs(dry_weight - check_dry)
         status = "✓ 通过" if passed else "✗ 不通过"
         self.progress_data.setText(
             "<span style='color:#2B579A;font-weight:bold'>测试进度：</span>恒重检查 样位%d: %s (本次=%.4f 上次=%.4f diff=%.4f)"
             % (row_idx + 1, status, dry_weight, check_dry, diff))
+
+        if not passed and self._table and row_idx < self._table.rowCount():
+            # 干燥重前移至 col4 后, 清空 col5(干燥重量) 提示待称重
+            from PySide2.QtWidgets import QTableWidgetItem
+            from PySide2.QtCore import Qt
+            item = self._table.item(row_idx, 4)
+            if item is None:
+                item = QTableWidgetItem()
+                item.setTextAlignment(Qt.AlignCenter)
+                item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+                self._table.setItem(row_idx, 4, item)
+            item.setText("{:.4f}".format(check_dry))
+            # 清空干燥重量列
+            item5 = self._table.item(row_idx, 5)
+            if item5 is not None:
+                item5.setText("")
+            logger.info("[TEST] 恒重前移 row=%d col4←%.4f col5清空" % (row_idx, check_dry))
 
     def _on_test_weigh_result(self, row_idx, dry_weight, phase):
         """测试称重结果实时回填表格: 检查性→col4, 干燥→col5"""
@@ -599,7 +620,12 @@ class MoistureAnalyzer(QMainWindow):
         logger.info("[TEST] 表格回填 row=%d col=%d weight=%.4f" % (row_idx, col, dry_weight))
 
     def _on_initial_weight(self, row_idx, col, value):
-        """复检称重实时回填表格: col2=坩埚重, col3=样重"""
+        """复检称重实时回填表格: col2=坩埚重, col3=样重, col4=检查性干燥重
+
+        col4 写入时同步清空 col5(干燥重量) — 恒重前移场景:
+        干燥重→检查性干燥重 后, 干燥重量列应为空, 等新一轮称重回填,
+        避免两列同时显示相同数值的中间状态。
+        """
         if not self._table or row_idx >= self._table.rowCount():
             return
         item = self._table.item(row_idx, col)
@@ -611,6 +637,11 @@ class MoistureAnalyzer(QMainWindow):
             item.setFlags(item.flags() & ~Qt.ItemIsEditable)
             self._table.setItem(row_idx, col, item)
         item.setText("{:.4f}".format(value))
+        # 恒重前移: 写入检查性干燥重(col4)时同步清空干燥重量(col5)
+        if col == 4:
+            item5 = self._table.item(row_idx, 5)
+            if item5 is not None:
+                item5.setText("")
         logger.info("[TEST] 复检回填 row=%d col=%d value=%.4f" % (row_idx, col, value))
 
     def _on_append_tare_backfill(self, row, weight):
