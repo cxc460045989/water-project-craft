@@ -41,7 +41,8 @@ class ConfirmDialog(QDialog):
         # 消息
         msg_label = QLabel(message)
         msg_label.setWordWrap(True)
-        msg_label.setStyleSheet(self.MSG_STYLE + "padding: 16px 4px;")
+        msg_label.setAttribute(Qt.WA_TranslucentBackground, True)
+        msg_label.setStyleSheet(self.MSG_STYLE + "padding: 16px 4px; background: transparent;")
         msg_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         layout.addWidget(msg_label)
 
@@ -109,6 +110,58 @@ class ConfirmDialog(QDialog):
         dlg = ConfirmDialog(parent, message, title,
                             confirm_text, cancel_text, danger)
         return dlg.exec_() == QDialog.Accepted
+
+    @staticmethod
+    def info(parent, message, title="提示", extra_width=0, extra_height=0, extra_top=0):
+        """信息提示弹框 — 单按钮，与确认弹框统一风格
+        extra_width / extra_height: 在自适应尺寸基础上的额外增量(px)
+        extra_top: 内容距顶部边距增量(px)
+        """
+        dlg = QDialog(parent)
+        dlg.setWindowTitle(title)
+        dlg.setWindowFlags(dlg.windowFlags() & ~Qt.WindowContextHelpButtonHint)
+        # 动态高度: 按消息行数自适应
+        line_count = message.count('\n') + 1
+        width = 480 + extra_width
+        height = max(180, 110 + line_count * 34) + extra_height
+        dlg.setFixedSize(width, height)
+
+        layout = QVBoxLayout(dlg)
+        layout.setContentsMargins(32, 24 + extra_top, 32, 20)
+        layout.setSpacing(0)
+
+        msg_label = QLabel(message)
+        msg_label.setWordWrap(True)
+        msg_label.setAttribute(Qt.WA_TranslucentBackground, True)
+        msg_label.setStyleSheet(
+            "font-size: 18px; font-weight: bold; color: #1F2937; padding: 16px 8px; line-height: 1.6; background: transparent;"
+        )
+        msg_label.setAlignment(Qt.AlignCenter)
+        layout.addWidget(msg_label)
+
+        layout.addStretch()
+
+        btn_layout = QHBoxLayout()
+        btn_layout.setSpacing(10)
+        btn_layout.addStretch()
+        btn_ok = QPushButton("确定")
+        btn_ok.setStyleSheet("""
+            QPushButton {
+                background-color: #2B579A; color: #FFFFFF;
+                border: none; border-radius: 4px;
+                font-size: 14px; font-weight: bold;
+            }
+            QPushButton:hover { background-color: #1E3F73; }
+            QPushButton:pressed { background-color: #152D52; }
+        """)
+        btn_ok.setFixedSize(110, 38)
+        btn_ok.setDefault(True)
+        btn_ok.clicked.connect(dlg.accept)
+        btn_layout.addWidget(btn_ok)
+        btn_layout.addStretch()
+        layout.addLayout(btn_layout)
+
+        dlg.exec_()
 
 
 # ===== 独立测试 =====

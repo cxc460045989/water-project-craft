@@ -691,7 +691,7 @@ def query_experiment_results(start_date=None, end_date=None,
     if name_filter:
         sql += ' AND LOWER("样品名") LIKE LOWER(?)'
         params.append("%" + name_filter + "%")
-    sql += " ORDER BY id DESC LIMIT ?"
+    sql += " ORDER BY id ASC LIMIT ?"
     params.append(limit)
     rows = conn.execute(sql, params).fetchall()
     conn.close()

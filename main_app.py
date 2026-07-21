@@ -366,10 +366,29 @@ class SelectButton(QPushButton):
         super().__init__(text, parent)
         self.setProperty("class", "SelectButton")
 
+def _load_window_title():
+    """从 exe 同级 title.txt 读取窗口标题，无文件则用默认值"""
+    default = "鹤壁市淇天仪器仪表有限公司"
+    try:
+        if getattr(sys, 'frozen', False):
+            exe_dir = os.path.dirname(os.path.abspath(sys.argv[0]))
+        else:
+            exe_dir = os.path.dirname(os.path.abspath(__file__))
+        title_file = os.path.join(exe_dir, "title.txt")
+        if os.path.exists(title_file):
+            with open(title_file, 'r', encoding='utf-8-sig') as f:
+                content = f.read().strip()
+                if content:
+                    return content
+    except Exception:
+        pass
+    return default
+
+
 class MoistureAnalyzer(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("鹤壁市淇天仪器仪表有限公司 demo")
+        self.setWindowTitle(_load_window_title())
         self.resize(1280, 800)
         self.setMinimumSize(900, 600)
         self.setStyleSheet(STYLESHEET)
@@ -570,12 +589,44 @@ class MoistureAnalyzer(QMainWindow):
         self.progress_data.setText("<span style='color:#2B579A;font-weight:bold'>测试进度：</span>恒温保持 %02d:%02d" % (mins, secs))
 
     def _on_test_done(self):
+        from confirm_dialog import ConfirmDialog
         self.btn_start.setEnabled(True)
         self.btn_start.setText("开始测试")
         self.btn_stop.setEnabled(False)
         self.progress_widget.setVisible(False)
         # 延迟刷新表格, 确保 _finalize_experiment 的 DB 写入已提交
         QTimer.singleShot(500, self._refresh_table_after_test)
+        # 检查是否自动清除数据
+        auto_clear = bool(load_params().get("autoclear", 0))
+        if auto_clear:
+            self._do_clear_all_data()
+            ConfirmDialog.info(self, "测试完成，数据已清除。", "测试完成")
+        else:
+            ConfirmDialog.info(self, "测试完成。", "测试完成")
+
+    def _do_clear_all_data(self):
+        """清除表格数据 + 数据库记录（保留模式列和校正坩埚名称）"""
+        if self._table:
+            self._table.blockSignals(True)
+            try:
+                for r in range(0, self._table.rowCount()):
+                    for c in range(self._table.columnCount()):
+                        if c == 1:  # 模式列保留
+                            continue
+                        if r == 0 and c == 0:  # 校正坩埚名称保留
+                            continue
+                        item = self._table.item(r, c)
+                        if item:
+                            item.setText("")
+            finally:
+                self._table.blockSignals(False)
+            # 清理数据库
+            from db import get_conn
+            conn = get_conn()
+            conn.execute("DELETE FROM experiment_samples")
+            conn.execute("DELETE FROM samples")
+            conn.commit()
+            conn.close()
 
     def _refresh_table_after_test(self):
         """测试完成后刷新表格, 加载水分/平均值/精密度"""
@@ -917,6 +968,7 @@ class MoistureAnalyzer(QMainWindow):
         from weight_check_dialog import WeightCheckDialog
         from db import load_params
         from PySide2.QtWidgets import QMessageBox
+        from confirm_dialog import ConfirmDialog
 
         # 找出所有不合格样品
         params = load_params()
@@ -941,7 +993,7 @@ class MoistureAnalyzer(QMainWindow):
                 failed_rows.append(r)
 
         if not failed_rows:
-            QMessageBox.information(self, "提示", "所有样品均已合格，无需重新称量")
+            ConfirmDialog.info(self, "所有样品均已合格，无需重新称量。", "提示")
             return
 
         dlg = WeighDialog(self)
@@ -1176,6 +1228,7 @@ class MoistureAnalyzer(QMainWindow):
         存入后可在"查询数据"中检索。
         """
         from PySide2.QtWidgets import QMessageBox
+        from confirm_dialog import ConfirmDialog
         from db import (ensure_experiment, load_params, load_experiment,
                        save_experiment_results_batch)
         import datetime as _dt
@@ -1232,7 +1285,7 @@ class MoistureAnalyzer(QMainWindow):
                     pass  # 数值异常的行跳过，不阻塞整体存数
 
         if not complete_rows:
-            QMessageBox.information(self, "提示", "表格中没有可存储的完整数据。\n请检查有数据的行是否填写完整。")
+            ConfirmDialog.info(self, "表格中没有可存储的完整数据。\n请检查有数据的行是否填写完整。", "提示")
             return
 
         # 获取实验上下文
@@ -1302,7 +1355,7 @@ class MoistureAnalyzer(QMainWindow):
         msg = "已成功存储 %d 条实验数据到数据库。\n(%s)\n\n可在「查询数据」中检索。" % (
             len(complete_rows), "、".join(detail_parts))
 
-        QMessageBox.information(self, "存数完成", msg)
+        ConfirmDialog.info(self, msg, "存数完成", extra_width=10, extra_height=50, extra_top=8)
         logger.info("[MANUAL_SAVE] 手动存数完成: experiment_id=%d, 存储%d条 (%s)"
                      % (eid, len(complete_rows), "、".join(detail_parts) if detail_parts else "无"))
 
@@ -1332,8 +1385,8 @@ class MoistureAnalyzer(QMainWindow):
         samples = load_experiment_samples(eid)
 
         if not samples:
-            QMessageBox.information(self, "提示",
-                "当前实验没有已存储的数据。\n请先完成实验或手动存数后再重新计算。")
+            ConfirmDialog.info(self,
+                "当前实验没有已存储的数据。\n请先完成实验或手动存数后再重新计算。", "提示")
             return
 
         # 银行舍入
@@ -1422,7 +1475,7 @@ class MoistureAnalyzer(QMainWindow):
             tw_count = tw_count + len(recalc_data) if mode == "全水" else tw_count
 
         if aw_count == 0 and tw_count == 0:
-            QMessageBox.information(self, "提示", "没有可重新计算的数据。")
+            ConfirmDialog.info(self, "没有可重新计算的数据。", "提示")
             return
 
         # 刷新主表格
@@ -1435,9 +1488,9 @@ class MoistureAnalyzer(QMainWindow):
         if tw_count:
             parts.append("全水 %d 条" % tw_count)
 
-        QMessageBox.information(self, "重新计算完成",
-            "已重新计算 %d 条数据。\n(%s)\n\n如需更新实验数据库，请点击「手动存数」。"
-            % (aw_count + tw_count, "、".join(parts)))
+        msg = "已重新计算 %d 条数据。\n(%s)\n\n如需更新实验数据库，请点击「手动存数」。" % (
+            aw_count + tw_count, "、".join(parts))
+        ConfirmDialog.info(self, msg, "重新计算完成")
         logger.info("[RECALC] 重新计算完成: experiment_id=%d, %d条"
                      % (eid, aw_count + tw_count))
 
@@ -1627,8 +1680,8 @@ class MoistureAnalyzer(QMainWindow):
                 data = _collect_table_data(self._table) if self._table else []
                 logger.debug("[PRINT] 收集到 {} 条样品数据".format(len(data)))
                 if not data:
-                    from PySide2.QtWidgets import QMessageBox
-                    QMessageBox.information(self, "提示", "当前表格中没有样品数据，请先输入样品名称。")
+                    from confirm_dialog import ConfirmDialog
+                    ConfirmDialog.info(self, "当前表格中没有样品数据，请先输入样品名称。", "提示")
                     return
                 print_report_direct(self, self._table, unit=unit, tech=tech, reviewer="")
             except Exception as e:
@@ -1976,27 +2029,7 @@ class MoistureAnalyzer(QMainWindow):
             if not ConfirmDialog.confirm(self, "确定要清除所有实验数据吗？此操作不可撤销！",
                                          title="清除确认", danger=True):
                 return
-            if self._table:
-                self._table.blockSignals(True)
-                try:
-                    for r in range(0, self._table.rowCount()):
-                        for c in range(self._table.columnCount()):
-                            if c == 1:  # 模式列保留
-                                continue
-                            if r == 0 and c == 0:  # 校正坩埚名称保留
-                                continue
-                            item = self._table.item(r, c)
-                            if item:
-                                item.setText("")
-                finally:
-                    self._table.blockSignals(False)
-                # 清理数据库
-                from db import get_conn
-                conn = get_conn()
-                conn.execute("DELETE FROM experiment_samples")
-                conn.execute("DELETE FROM samples")
-                conn.commit()
-                conn.close()
+            self._do_clear_all_data()
 
         elif name == "手动存数":
             self._on_manual_save()
