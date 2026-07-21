@@ -1479,6 +1479,20 @@ class MoistureAnalyzer(QMainWindow):
         f = self._table.font()
         f.setPointSize(fs)
         self._table.setFont(f)
+        self._update_main_header_text()
+
+    def _update_main_header_text(self):
+        """检查性干燥重量列宽度够则一行, 不够则换行"""
+        if self._table is None:
+            return
+        col4_w = self._table.columnWidth(4)
+        item = self._table.horizontalHeaderItem(4)
+        if item is None:
+            return
+        if col4_w >= 140:
+            item.setText("检查性干燥重量(g)")
+        else:
+            item.setText("检查性\n干燥重量(g)")
 
     def eventFilter(self, obj, event):
         if obj is self._table and event.type() == QEvent.Resize:

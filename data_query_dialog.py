@@ -128,6 +128,18 @@ class DataQueryDialog(QDialog):
     def resizeEvent(self, event):
         super().resizeEvent(event)
         QTimer.singleShot(0, self._adjust_query_row_height)
+        QTimer.singleShot(0, self._update_header_text)
+
+    def _update_header_text(self):
+        """检查性干燥重列宽度够则一行, 不够则换行"""
+        if self._table is None:
+            return
+        col6_w = self._table.columnWidth(6)
+        # 12pt bold 约130px可放下一行
+        if col6_w >= 130:
+            self._table.horizontalHeaderItem(6).setText("检查性干燥重(g)")
+        else:
+            self._table.horizontalHeaderItem(6).setText("检查性\n干燥重(g)")
 
     def _adjust_query_row_height(self):
         """表格宽度变化时等比调整行高和字体(参考主界面)"""
@@ -147,6 +159,7 @@ class DataQueryDialog(QDialog):
         f = self._table.font()
         f.setPointSize(fs)
         self._table.setFont(f)
+        self._table.resizeRowsToContents()
 
     def _build_table(self, pl):
         headers = ["打印", "样品名称", "测试日期", "模式",
@@ -161,10 +174,10 @@ class DataQueryDialog(QDialog):
         hf = QFont("Microsoft YaHei", 12, QFont.Bold)
         self._table.horizontalHeader().setFont(hf)
         self._table.horizontalHeader().setDefaultAlignment(Qt.AlignCenter)
-        self._table.horizontalHeader().setMinimumHeight(36)
+        self._table.horizontalHeader().setMinimumHeight(48)
         self._table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self._table.horizontalHeader().setStretchLastSection(True)
-        self._table.horizontalHeader().setMinimumSectionSize(60)
+        self._table.horizontalHeader().setMinimumSectionSize(100)
         self._table.setFont(QFont("Microsoft YaHei", 10))
 
         self._table.verticalHeader().setDefaultSectionSize(32)
@@ -173,7 +186,7 @@ class DataQueryDialog(QDialog):
         self._table.setSelectionMode(QAbstractItemView.SingleSelection)
         self._table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self._table.setShowGrid(True)
-        self._table.setWordWrap(False)
+        self._table.setWordWrap(True)
 
         pl.addWidget(self._table, 1)
         QTimer.singleShot(100, self._adjust_query_row_height)
