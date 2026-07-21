@@ -167,7 +167,7 @@ class AppendSampleWorker(QThread):
     # ================================================================
 
     def _wait_descend_and_read(self):
-        """发送样盘下降 → 等上行帧确认 → 5s 持续读数 → 返回最终重量"""
+        """发送样盘下降 → 等上行帧确认 → 5s 持续读数 → 取最后3个中位数"""
         self._send_cmd(CMD.SAMPLE_PLATE_DOWN, "样盘下降")
         _t0 = time.time()
         while self._running and (time.time() - _t0) < 15.0:
@@ -177,24 +177,32 @@ class AppendSampleWorker(QThread):
             self._sleep(0.1)
         _log("样盘下降完成, 等待5s稳定...")
         start = time.time()
-        weight = 0.0
+        recent_weights = []
         while time.time() - start < 5.0:
             if not self._running:
                 break
             w, ok = self._read_uplink_weight()
             if ok:
-                weight = w
-                display = round(weight, 4)
+                recent_weights.append(w)
+                display = round(w, 4)
                 self.sig_progress.emit({
                     "phase": "tare", "row": self._row,
                     "name": self._name, "weight": display
                 })
             self._sleep(0.5)
-        # 5s 结束后取一次最新读数作为最终坩埚重
+        # 5s 结束后取一次最新读数也纳入收集
         final_w, final_ok = self._read_uplink_weight()
         if final_ok:
-            weight = final_w
-            _log("最终读数: %.4fg" % weight)
+            recent_weights.append(final_w)
+            _log("最终读数: %.4fg" % final_w)
+        # 取最后3个读数的中位数, 不足3个则取最后一个
+        if len(recent_weights) >= 3:
+            last_three = sorted(recent_weights[-3:])
+            weight = last_three[1]
+        elif recent_weights:
+            weight = recent_weights[-1]
+        else:
+            weight = 0.0
         return round(weight, 4)
 
     # ================================================================

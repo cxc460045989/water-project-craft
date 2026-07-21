@@ -62,6 +62,9 @@ class TestConfig:
         self.tw_interval = 5
         self.tw_corr_crucible = 0.0
         self.tw_corr_dry = 0.0
+        # 温度校准
+        self.aw_temp_corr = 0.0
+        self.tw_temp_corr = 0.0
         # 新增: 氮气/鼓风
         self.tw_tare_weight = 0.0
         self.samples = []  # [(row_idx, name, mode, sample_weight), ...]
@@ -88,6 +91,8 @@ class TestConfig:
         cfg.tw_interval = int(db_params.get("tw_interval", 5))
         cfg.tw_corr_crucible = float(db_params.get("tw_corr", 0.0))
         cfg.tw_corr_dry = 0.0
+        cfg.aw_temp_corr = float(db_params.get("aw_temp_corr", 0.0))
+        cfg.tw_temp_corr = float(db_params.get("tw_temp_corr", 0.0))
         cfg.beep_enabled = bool(db_params.get("beep", 1))
         cfg.retest = bool(int(db_params.get("retest", 0)))
         cfg.samples = list(sample_list) if sample_list else []
@@ -485,6 +490,11 @@ class TestWorker(QObject):
         return self.cfg.aw_precision if self._is_aw else self.cfg.tw_precision
 
     @property
+    def _temp_corr(self):
+        """当前阶段的温度校准值: 分析水用 aw_temp_corr, 全水用 tw_temp_corr"""
+        return self.cfg.aw_temp_corr if self._is_aw else self.cfg.tw_temp_corr
+
+    @property
     def _dry_cfg_const_check(self):
         return self.cfg.aw_const_check if self._is_aw else self.cfg.tw_const_check
 
@@ -514,9 +524,10 @@ class TestWorker(QObject):
                             "开始测试(%s)" % ("鼓风" if fan else "氮气"))
 
         self._cmd_is_temp = False
-        cmd = CommandBuilder.build_temp_control(temp)
+        adjusted_temp = int(temp - self._temp_corr)
+        cmd = CommandBuilder.build_temp_control(adjusted_temp)
         self._serial.send(cmd)
-        _log("烘干启动: 发送控温 %d℃ %s" % (temp, cmd.hex()))
+        _log("烘干启动: 发送控温 %d℃(校准前%d℃) %s" % (adjusted_temp, temp, cmd.hex()))
         self._start_temp_patrol()
 
     def _start_temp_patrol(self):
@@ -541,9 +552,10 @@ class TestWorker(QObject):
 
         self._cmd_is_temp = not self._cmd_is_temp
         if self._cmd_is_temp:
-            cmd = CommandBuilder.build_temp_control(self._temp_target)
+            adjusted_target = int(self._temp_target - self._temp_corr)
+            cmd = CommandBuilder.build_temp_control(adjusted_target)
             self._serial.send(cmd)
-            _log("正在控温: 发送控温 %d℃ %s" % (self._temp_target, cmd.hex()))
+            _log("正在控温: 发送控温 %d℃(校准前%d℃) %s" % (adjusted_target, self._temp_target, cmd.hex()))
         else:
             test_cmd = CMD.MOISTURE_TEST_1 if self._dry_cfg_fan else CMD.MOISTURE_TEST_2
             self._safe_send_cmd(test_cmd,
@@ -720,7 +732,7 @@ class TestWorker(QObject):
 
             results = []
             单位 = (exp_record or {}).get("unit", "") or params.get("unit", "")
-            化验员 = (exp_record or {}).get("tech", "") or params.get("hy_current", "")
+            化验员 = params.get("hy_current", "") or (exp_record or {}).get("tech", "")
 
             for mode in ("分析水", "全水"):
                 mode_samples = [
@@ -916,9 +928,10 @@ class TestWorker(QObject):
         self._last_uplink_time = time.time()
         frames = self._uplink_buf.feed(data)
         for f in frames:
-            self._current_temp = f["temperature"]
+            calibrated = f["temperature"] + self._temp_corr
+            self._current_temp = calibrated
             self._current_weight = f["weight"]
-            self.sig_temp_update.emit(f["temperature"])
+            self.sig_temp_update.emit(calibrated)
             self._log_uplink_throttled(f)
 
         # TEMP_PATROL状态下每次收到数据也检查温度(快速响应)
@@ -1189,9 +1202,10 @@ class TestWorker(QObject):
         buf = UplinkBuffer()
         frames = buf.feed(raw)
         for f in frames:
-            self._current_temp = f["temperature"]
+            calibrated = f["temperature"] + self._temp_corr
+            self._current_temp = calibrated
             self._current_weight = f["weight"]
-            self.sig_temp_update.emit(f["temperature"])
+            self.sig_temp_update.emit(calibrated)
             self._log_uplink_throttled(f)
 
     def _log_uplink_throttled(self, f):
@@ -1218,9 +1232,10 @@ class TestWorker(QObject):
                 if raw:
                     buf = UplinkBuffer()
                     for f in buf.feed(raw):
-                        self._current_temp = f["temperature"]
+                        calibrated = f["temperature"] + self._temp_corr
+                        self._current_temp = calibrated
                         self._current_weight = f["weight"]
-                        self.sig_temp_update.emit(f["temperature"])
+                        self.sig_temp_update.emit(calibrated)
             cmd = CommandBuilder.build_command(func_code)
             self._serial.send(cmd)
             _log("安全发送: %s %s" % (desc, cmd.hex()))

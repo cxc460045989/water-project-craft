@@ -96,7 +96,7 @@ def seed():
     print("=" * 60)
     print("Mock 数据种子完成!")
     print(f"  实验ID: {exp_id}")
-    print(f"  样品: 校正坩埚 + 6个分析水 + 4个全水 + 13个空行 = 24行")
+    print(f"  样品: 校正坩埚 + 6  ,个分析水 + 4个全水 + 13个空行 = 24行")
     print()
     print("启动方式:")
     print("  set WATER_MODE=mock")

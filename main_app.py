@@ -508,7 +508,9 @@ class MoistureAnalyzer(QMainWindow):
         frames = self._uplink_buf.feed(data)
         for f in frames:
             self._frame_count = getattr(self, "_frame_count", 0) + 1
-            self.temp_val.setText("%.1f" % f["temperature"])
+            corr = self._get_temp_corr_for_display()
+            cal_temp = f["temperature"] + corr
+            self.temp_val.setText("%.1f" % cal_temp)
             if f["btn_pressed"]:
                 pass
             # 节流: 每秒最多打印一条上行帧日志
@@ -518,6 +520,19 @@ class MoistureAnalyzer(QMainWindow):
                 logger.info("[SERIAL][" + getattr(self, "_port_name", "?") + "] 上行帧: %s  temp=%.1f weight=%.4f online=%d btn=%d" % (
                     f["raw_str"], f["temperature"], f["weight"], f["online"], f["btn_pressed"]))
 
+
+    def _get_temp_corr_for_display(self):
+        """获取主界面温度校准值(缓存, 每30秒从DB刷新)"""
+        _now = time.time()
+        if _now - getattr(self, '_temp_corr_cache_ts', 0) > 30.0:
+            try:
+                from db import load_params
+                params = load_params()
+                self._cached_aw_temp_corr = float(params.get("aw_temp_corr", 0.0))
+                self._temp_corr_cache_ts = _now
+            except Exception:
+                self._cached_aw_temp_corr = 0.0
+        return getattr(self, '_cached_aw_temp_corr', 0.0)
 
     def _on_serial_error(self, msg):
         logger.info("[SERIAL][" + getattr(self, "_port_name", "?") + "] 收到: " + str(msg))
@@ -710,6 +725,7 @@ class MoistureAnalyzer(QMainWindow):
         self._fill_table(self._table)
         self._restore_samples_from_db(self._table)
         self._table.cellChanged.connect(self._on_cell_changed)
+        QTimer.singleShot(0, self._adjust_row_height)
 
     def _save_hy_current(self, text):
         """保存当前选中的化验员到 SQLite"""
@@ -763,8 +779,8 @@ class MoistureAnalyzer(QMainWindow):
         t.horizontalHeader().setFont(hf)
         t.horizontalHeader().setDefaultAlignment(Qt.AlignCenter)
         t.horizontalHeader().setMinimumHeight(50)
-        t.verticalHeader().setDefaultSectionSize(36)
-        t.verticalHeader().setMinimumSectionSize(30)
+        t.verticalHeader().setDefaultSectionSize(32)
+        t.verticalHeader().setMinimumSectionSize(24)
         t.verticalHeader().setVisible(True)
         t.verticalHeader().setDefaultAlignment(Qt.AlignCenter)
         t.verticalHeader().setFixedWidth(50)  # 加宽防点击溢出到 col 0
@@ -774,8 +790,8 @@ class MoistureAnalyzer(QMainWindow):
         t.setTabKeyNavigation(True)
         t.setWordWrap(True)
         t.setShowGrid(True)
-        t.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
-        t.horizontalHeader().setStretchLastSection(False)
+        t.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        t.horizontalHeader().setStretchLastSection(True)
         t.horizontalHeader().setMinimumSectionSize(80)
         self._fill_table(t)
         self._restore_samples_from_db(t)
@@ -798,6 +814,7 @@ class MoistureAnalyzer(QMainWindow):
         self._vheader = t.verticalHeader()  # 缓存引用，PySide2 每次调用 verticalHeader() 返回新 Python 包装对象
         self._vheader.installEventFilter(self)
         pl.addWidget(t)
+        QTimer.singleShot(100, self._adjust_row_height)
 
     def _fill_table(self, t):
         c = Qt.AlignCenter
@@ -1225,7 +1242,7 @@ class MoistureAnalyzer(QMainWindow):
         batch_no = _dt.datetime.now().strftime("%Y%m%d_%H%M%S")
         test_date = _dt.datetime.now().strftime("%Y-%m-%d")
         unit = (exp_record or {}).get("unit", "") or params.get("unit", "")
-        tech = (exp_record or {}).get("tech", "") or params.get("hy_current", "")
+        tech = params.get("hy_current", "") or (exp_record or {}).get("tech", "")
 
         # 构建结果列表
         results = []
@@ -1443,7 +1460,29 @@ class MoistureAnalyzer(QMainWindow):
                 tbl.removeCellWidget(row, col)
         # 弹出(选择)按钮布局
 
+    def _adjust_row_height(self):
+        """表格宽度变化时等比调整行高
+        首次宽度>=400时记录基准比例(行高24/列宽), 后续按此比例缩放, 不低于24"""
+        if self._table is None:
+            return
+        vp_w = self._table.viewport().width()
+        if vp_w < 400:
+            return
+        col_w = vp_w / self._table.columnCount()
+        if getattr(self, '_row_base_ratio', 0) <= 0:
+            self._row_base_ratio = (32.0 / col_w) * 0.8
+            self._row_base_size = 32.0
+            self._font_base_size = 10.0
+        rh = max(24, int(col_w * self._row_base_ratio))
+        self._table.verticalHeader().setDefaultSectionSize(rh)
+        fs = max(9, int(self._font_base_size * rh / self._row_base_size + 0.5))
+        f = self._table.font()
+        f.setPointSize(fs)
+        self._table.setFont(f)
+
     def eventFilter(self, obj, event):
+        if obj is self._table and event.type() == QEvent.Resize:
+            QTimer.singleShot(0, self._adjust_row_height)
         if (self._table is not None
                 and hasattr(self, '_vheader') and obj is self._vheader
                 and event.type() in (QEvent.MouseButtonPress, QEvent.MouseButtonRelease)):
@@ -1564,20 +1603,20 @@ class MoistureAnalyzer(QMainWindow):
 
         if name == "打印数据":
             try:
-                from print_report import print_export_prompt, _collect_table_data
+                # 直接触发打印, 跳过选择弹窗
+                from print_report import print_report_direct, _collect_table_data
                 from db import load_params
                 logger.debug("[PRINT] 打印数据按钮被点击")
                 p = load_params()
                 unit = p.get("unit", "")
                 tech = self.hy_combo.currentText() if hasattr(self, "hy_combo") else ""
-                # 先检查是否有数据
                 data = _collect_table_data(self._table) if self._table else []
                 logger.debug("[PRINT] 收集到 {} 条样品数据".format(len(data)))
                 if not data:
                     from PySide2.QtWidgets import QMessageBox
                     QMessageBox.information(self, "提示", "当前表格中没有样品数据，请先输入样品名称。")
                     return
-                print_export_prompt(self, self._table, unit=unit, tech=tech, reviewer="")
+                print_report_direct(self, self._table, unit=unit, tech=tech, reviewer="")
             except Exception as e:
                 logger.error("[PRINT] 打印异常: " + str(e))
                 import traceback

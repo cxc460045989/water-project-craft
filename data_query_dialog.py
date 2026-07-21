@@ -8,7 +8,7 @@ import sys, os
 from PySide2.QtWidgets import (
     QApplication, QDialog, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QFormLayout,
     QGroupBox, QPushButton, QLabel, QLineEdit, QCheckBox, QTableWidget, QTableWidgetItem,
-    QHeaderView, QAbstractItemView, QFileDialog, QMessageBox,
+    QHeaderView, QAbstractItemView, QFileDialog, QMessageBox, QSizePolicy,
 )
 from PySide2.QtCore import Qt, QTimer
 from PySide2.QtGui import QFont
@@ -99,7 +99,7 @@ class DataQueryDialog(QDialog):
             }
         """)
         self._build_ui()
-        self.resize(960, 560)
+        self.resize(1250, 770)
         # 打开时默认查询当天数据
         QTimer.singleShot(50, self._on_search)
 
@@ -115,14 +115,43 @@ class DataQueryDialog(QDialog):
         bottom_layout = QHBoxLayout()
         bottom_layout.setSpacing(10)
         self._build_search_group(bottom_layout)
-        self._build_upload_group(bottom_layout)
+        bottom_layout.addStretch()
         self._build_button_area(bottom_layout)
         main_layout.addLayout(bottom_layout)
+
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key_Return or event.key() == Qt.Key_Enter:
+            self._on_search()
+        else:
+            super().keyPressEvent(event)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        QTimer.singleShot(0, self._adjust_query_row_height)
+
+    def _adjust_query_row_height(self):
+        """表格宽度变化时等比调整行高和字体(参考主界面)"""
+        if self._table is None:
+            return
+        vp_w = self._table.viewport().width()
+        if vp_w < 400:
+            return
+        col_w = vp_w / self._table.columnCount()
+        if getattr(self, '_qrow_base_ratio', 0) <= 0:
+            self._qrow_base_ratio = (32.0 / col_w) * 0.8
+            self._qrow_base_size = 32.0
+            self._qfont_base_size = 10.0
+        rh = max(24, int(col_w * self._qrow_base_ratio))
+        self._table.verticalHeader().setDefaultSectionSize(rh)
+        fs = max(9, int(self._qfont_base_size * rh / self._qrow_base_size + 0.5))
+        f = self._table.font()
+        f.setPointSize(fs)
+        self._table.setFont(f)
 
     def _build_table(self, pl):
         headers = ["打印", "样品名称", "测试日期", "模式",
                     "坩埚重量(g)", "样品重量(g)", "检查性干燥重(g)",
-                    "干燥重量(g)", "水分(%)", "平均值(%)", "精密度(%)",
+                    "干燥重量(g)", "水分(%)", "平均值(%)",
                     "测试单位", "化验员"]
         self._table = QTableWidget()
         self._table.setColumnCount(len(headers))
@@ -133,11 +162,12 @@ class DataQueryDialog(QDialog):
         self._table.horizontalHeader().setFont(hf)
         self._table.horizontalHeader().setDefaultAlignment(Qt.AlignCenter)
         self._table.horizontalHeader().setMinimumHeight(36)
-        self._table.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
-        self._table.horizontalHeader().setStretchLastSection(False)
+        self._table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self._table.horizontalHeader().setStretchLastSection(True)
         self._table.horizontalHeader().setMinimumSectionSize(60)
+        self._table.setFont(QFont("Microsoft YaHei", 10))
 
-        self._table.verticalHeader().setDefaultSectionSize(30)
+        self._table.verticalHeader().setDefaultSectionSize(32)
         self._table.verticalHeader().setVisible(True)
         self._table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self._table.setSelectionMode(QAbstractItemView.SingleSelection)
@@ -145,11 +175,8 @@ class DataQueryDialog(QDialog):
         self._table.setShowGrid(True)
         self._table.setWordWrap(False)
 
-        col_widths = [50, 90, 85, 72, 108, 108, 130, 108, 80, 80, 80, 80, 70]
-        for i, w in enumerate(col_widths):
-            self._table.setColumnWidth(i, w)
-
         pl.addWidget(self._table, 1)
+        QTimer.singleShot(100, self._adjust_query_row_height)
 
     def _build_search_group(self, pl):
         grp = QGroupBox(" 查找数据 ")
@@ -195,6 +222,8 @@ class DataQueryDialog(QDialog):
         h2.addWidget(self._le_name)
         layout.addRow(" 样品名称 ", h2)
 
+        grp.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Preferred)
+        grp.setMaximumWidth(520)
         pl.addWidget(grp)
 
     def _build_upload_group(self, pl):
@@ -222,13 +251,14 @@ class DataQueryDialog(QDialog):
         btn_upload.clicked.connect(self._on_upload)
         h2.addWidget(btn_upload)
         layout.addRow(" 监听端口 ", h2)
-
+        grp.setVisible(False)  # TCP上传暂未启用, 隐藏UI保留代码
         pl.addWidget(grp)
 
     def _build_button_area(self, pl):
         widget = QWidget()
+        widget.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
         layout = QVBoxLayout(widget)
-        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setContentsMargins(10, 8, 10, 8)
         layout.setSpacing(6)
 
         row1 = QHBoxLayout(); row1.setSpacing(6); row1.addStretch()
@@ -321,9 +351,8 @@ class DataQueryDialog(QDialog):
                 self._fmt(r.get("样重"), 4),
                 self._fmt(r.get("检查性干燥重"), 4),
                 self._fmt(r.get("干燥后重"), 4),
-                self._fmt(r.get("水分"), 2),
-                self._fmt(r.get("平均水分"), 2),
-                self._fmt(r.get("精密度"), 2),
+                self._fmt(r.get("水分"), 1 if r.get("模式") == "全水" else 2),
+                self._fmt(r.get("平均水分"), 1 if r.get("模式") == "全水" else 2),
                 r.get("测试单位", ""),
                 r.get("化验员", ""),
             ]
@@ -406,7 +435,7 @@ class DataQueryDialog(QDialog):
             with open(path, "w", encoding="gbk") as f:
                 headers = ["样品名称", "测试日期", "模式",
                            "坩埚重量(g)", "样品重量(g)", "检查性干燥重(g)",
-                           "干燥重量(g)", "水分(%)", "平均值(%)", "精密度(%)",
+                           "干燥重量(g)", "水分(%)", "平均值(%)",
                            "测试单位", "化验员"]
                 f.write(",".join(headers) + "\n")
                 for i, r in enumerate(selected):
@@ -418,9 +447,8 @@ class DataQueryDialog(QDialog):
                         self._fmt(r.get("样重"), 4),
                         self._fmt(r.get("检查性干燥重"), 4),
                         self._fmt(r.get("干燥后重"), 4),
-                        self._fmt(r.get("水分"), 2),
-                        self._fmt(r.get("平均水分"), 2),
-                        self._fmt(r.get("精密度"), 2),
+                        self._fmt(r.get("水分"), 1 if r.get("模式") == "全水" else 2),
+                        self._fmt(r.get("平均水分"), 1 if r.get("模式") == "全水" else 2),
                         str(r.get("测试单位", "")),
                         str(r.get("化验员", "")),
                     ]
@@ -454,9 +482,14 @@ class DataQueryDialog(QDialog):
         from PySide2.QtGui import QTextDocument, QFont
         from datetime import datetime
 
-        # 从第一行数据取单位/化验员
+        # 遍历所有选中行, 化验员去重后用逗号分割
         unit = rows[0].get("测试单位", "") if rows else ""
-        tech = rows[0].get("化验员", "") if rows else ""
+        techs = []
+        for r in rows:
+            t = (r.get("化验员", "") or "").strip()
+            if t and t not in techs:
+                techs.append(t)
+        tech = ",".join(techs)
 
         rows_html = ""
         for r in rows:
@@ -467,33 +500,32 @@ class DataQueryDialog(QDialog):
                 self._fmt(r.get("样重"), 4),
                 self._fmt(r.get("检查性干燥重"), 4),
                 self._fmt(r.get("干燥后重"), 4),
-                self._fmt(r.get("水分"), 2),
-                self._fmt(r.get("平均水分"), 2),
-                self._fmt(r.get("精密度"), 2),
+                self._fmt(r.get("水分"), 1 if r.get("模式") == "全水" else 2),
+                self._fmt(r.get("平均水分"), 1 if r.get("模式") == "全水" else 2),
             ]
             rows_html += "<tr>" + "".join("<td>%s</td>" % c for c in cells) + "</tr>"
 
         date_str = datetime.now().strftime("%Y/%#m/%#d")
 
         html = """<!DOCTYPE html><html><head><meta charset="utf-8"><style>
-body { font-family: "SimSun", "Microsoft YaHei", sans-serif; margin: 0; padding: 0; }
+body { font-family: "SimSun", "Microsoft YaHei", "Noto Sans CJK SC", serif; margin: 0; padding: 0; }
 h1 { text-align: center; font-size: 22pt; font-weight: bold; margin: 0 0 12px 0; }
-table.data { width: 100%; border-collapse: collapse; font-size: 9pt; }
+table.data { width: 100%%; border-collapse: collapse; font-size: 10pt; }
 th, td { border: 0.5px solid #CCCCCC; text-align: center; padding: 3px 4px; }
 th { background-color: #F3F4F6; }
 </style></head><body>
 <h1>水分仪分析报表</h1>
-<pre style="font-size:10pt; font-family:'SimSun','Microsoft YaHei',sans-serif; margin:0;">
+<pre style="font-size:10pt; font-family:'SimSun','Microsoft YaHei','Noto Sans CJK SC',serif; margin:0;">
 测试单位：%s                    打印日期：%s</pre>
 <table class="data">
 <thead><tr>
 <th>样品名称</th><th>模式</th><th>坩埚重(g)</th><th>样品重量(g)</th>
-<th>检查性干燥重(g)</th><th>干燥重量(g)</th><th>水分(%)</th>
-<th>平均值(%)</th><th>精密度(%)</th>
+<th>检查性干燥重(g)</th><th>干燥重量(g)</th><th>水分(%%)</th>
+<th>平均值(%%)</th>
 </tr></thead>
 <tbody>%s</tbody>
 </table>
-<pre style="font-size:10pt; font-family:'SimSun','Microsoft YaHei',sans-serif; margin:8px 0 0 0;">
+<pre style="font-size:10pt; font-family:'SimSun','Microsoft YaHei','Noto Sans CJK SC',serif; margin:8px 0 0 0;">
 化验员：%s                    审核：</pre>
 </body></html>""" % (unit, date_str, rows_html, tech)
 
@@ -503,7 +535,7 @@ th { background-color: #F3F4F6; }
 
         printer = QPrinter(QPrinter.HighResolution)
         printer.setPageSize(QPrinter.A4)
-        printer.setPageMargins(15, 15, 15, 15, QPrinter.Millimeter)
+        printer.setPageMargins(8, 8, 8, 8, QPrinter.Millimeter)
 
         if not QPrinterInfo.availablePrinterNames():
             path, _ = QFileDialog.getSaveFileName(

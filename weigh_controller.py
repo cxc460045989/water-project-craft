@@ -273,18 +273,27 @@ class WeighWorker(QThread):
                     self._sleep(0.1)
                 _log("样盘下降完成, 等待 5.0s 稳定...")
                 _start = time.time()
+                recent_weights = []
                 while self._running and (time.time() - _start) < 5.0:
                     w, ok = self._read_uplink_weight()
                     if ok:
+                        recent_weights.append(w)
                         net_w = round(w - self._get_tare_weight(row), 4)
                         self.sig_real_time_sample_weight.emit(net_w)
                     self._sleep(0.5)
                 self._send_cmd(CMD.BEEPER_1S, desc="蜂鸣提示加样")
                 self._sleep(CMD_INTERVAL_S)
                 tare_weight = self._get_tare_weight(row)
-                # 发送天平数据到仪器 (5A 58 ... 协议)
+                # 发送天平数据到仪器 (5A 58 ... 协议) — 取最后3个读数的中位数
                 total_raw, ok = self._read_uplink_weight()
                 if ok:
+                    recent_weights.append(total_raw)
+                if len(recent_weights) >= 3:
+                    last_three = sorted(recent_weights[-3:])
+                    total_raw = last_three[1]
+                elif recent_weights:
+                    total_raw = recent_weights[-1]
+                if recent_weights:
                     sample_raw = round(total_raw - tare_weight, 4) if tare_weight else round(total_raw, 4)
                     self._send_send_weight_to_instrument(sample_raw)
                     _log("发送天平数据到仪器: 总重={:.4f}g 样重={:.4f}g".format(
@@ -605,7 +614,7 @@ class WeighWorker(QThread):
 
     # ===== 串口工具方法 =====
     def _wait_descend_and_read(self, row, name, phase, tare_weight=0.0):
-        """发送样盘下降 → 等上行帧确认 → 5s 持续读数推送 UI → 返回最终重量"""
+        """发送样盘下降 → 等上行帧确认 → 5s 持续读数推送 UI → 取最后3个中位数"""
         self._send_cmd(CMD.SAMPLE_PLATE_DOWN, desc="样盘下降")
         _t0 = time.time()
         while self._running and (time.time() - _t0) < 15.0:
@@ -615,18 +624,26 @@ class WeighWorker(QThread):
             self._sleep(0.1)
         _log("样盘下降完成, 等待 5.0s 稳定...")
         start = time.time()
-        weight = 0.0
+        recent_weights = []
         while time.time() - start < 5.0:
             if not self._running:
                 break
             w, ok = self._read_uplink_weight()
             if ok:
-                weight = w
-                display_weight = round(weight - tare_weight, 4) if phase == "sample" else round(weight, 4)
+                recent_weights.append(w)
+                display_weight = round(w - tare_weight, 4) if phase == "sample" else round(w, 4)
                 self.sig_weigh_progress.emit({
                     "phase": phase, "row": row, "name": name, "weight": display_weight
                 })
             self._sleep(0.5)
+        # 取最后3个读数的中位数, 不足3个则取最后一个
+        if len(recent_weights) >= 3:
+            last_three = sorted(recent_weights[-3:])
+            weight = last_three[1]
+        elif recent_weights:
+            weight = recent_weights[-1]
+        else:
+            weight = 0.0
         weight = round(weight, 4)
         _log("称量完成 row={} name={} 重量={:.4f}g".format(row, name, weight))
         return weight

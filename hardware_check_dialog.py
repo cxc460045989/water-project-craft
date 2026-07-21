@@ -100,6 +100,7 @@ class HardwareCheckDialog(QDialog):
             }
         """)
         self._build_ui()
+        self._load_temp_corr_from_db()
         self.setFixedSize(540, 570)
         if self._mgr:
             from protocol_layer import UplinkBuffer
@@ -178,16 +179,18 @@ class HardwareCheckDialog(QDialog):
         form2 = QGridLayout()
         form2.setSpacing(8)
         form2.addWidget(QLabel(" 分析水 "), 0, 0)
-        le_aw = QLineEdit("0")
-        le_aw.setFixedWidth(80)
-        le_aw.setAlignment(Qt.AlignCenter)
-        form2.addWidget(le_aw, 0, 1)
+        self.le_aw_temp_corr = QLineEdit("0")
+        self.le_aw_temp_corr.setFixedWidth(80)
+        self.le_aw_temp_corr.setAlignment(Qt.AlignCenter)
+        self.le_aw_temp_corr.editingFinished.connect(self._on_temp_corr_changed)
+        form2.addWidget(self.le_aw_temp_corr, 0, 1)
         form2.addWidget(QLabel(" ℃ "), 0, 2)
         form2.addWidget(QLabel(" 全水 "), 1, 0)
-        le_tw = QLineEdit("0")
-        le_tw.setFixedWidth(80)
-        le_tw.setAlignment(Qt.AlignCenter)
-        form2.addWidget(le_tw, 1, 1)
+        self.le_tw_temp_corr = QLineEdit("0")
+        self.le_tw_temp_corr.setFixedWidth(80)
+        self.le_tw_temp_corr.setAlignment(Qt.AlignCenter)
+        self.le_tw_temp_corr.editingFinished.connect(self._on_temp_corr_changed)
+        form2.addWidget(self.le_tw_temp_corr, 1, 1)
         form2.addWidget(QLabel(" ℃ "), 1, 2)
         right2.addLayout(form2)
         right2.addStretch()
@@ -229,6 +232,41 @@ class HardwareCheckDialog(QDialog):
         main_layout.addWidget(self._status)
 
 
+    # ---- 温度校准 ----
+    def _get_aw_temp_corr(self):
+        try:
+            return float(self.le_aw_temp_corr.text() or "0")
+        except (ValueError, AttributeError):
+            return 0.0
+
+    def _get_tw_temp_corr(self):
+        try:
+            return float(self.le_tw_temp_corr.text() or "0")
+        except (ValueError, AttributeError):
+            return 0.0
+
+    def _load_temp_corr_from_db(self):
+        """从数据库加载温度校准值到输入框"""
+        try:
+            from db import load_params
+            params = load_params()
+            aw = params.get("aw_temp_corr", 0)
+            tw = params.get("tw_temp_corr", 0)
+            self.le_aw_temp_corr.setText("{:.1f}".format(float(aw)))
+            self.le_tw_temp_corr.setText("{:.1f}".format(float(tw)))
+        except Exception:
+            pass
+
+    def _on_temp_corr_changed(self):
+        """温度校准值修改后存入DB"""
+        try:
+            aw = self._get_aw_temp_corr()
+            tw = self._get_tw_temp_corr()
+            from db import save_params
+            save_params(aw_temp_corr=aw, tw_temp_corr=tw)
+        except Exception:
+            pass
+
 # ============================================================
 
     # ---- 串口通讯 ----
@@ -237,7 +275,10 @@ class HardwareCheckDialog(QDialog):
             return
         frames = self._buf.feed(data)
         for f in frames:
-            self.temp_digit.setText("%.1f" % f["temperature"])
+            # 温度校准: 默认用分析水校准值显示
+            aw_corr = self._get_aw_temp_corr()
+            cal_temp = f["temperature"] + aw_corr
+            self.temp_digit.setText("%.1f" % cal_temp)
             if f["weight"] >= 0:
                 self.scale_digit.setText("%.4f" % f["weight"])
             if self._status_callback:

@@ -19,14 +19,14 @@ def _build_html(unit, data, tech, reviewer, date_str):
     return f"""<!DOCTYPE html><html><head><meta charset="utf-8"><style>
 body {{ font-family: "SimSun", "Microsoft YaHei", "Noto Sans CJK SC", serif; margin: 0; padding: 0; }}
 h1 {{ text-align: center; font-size: 22pt; font-weight: bold; margin: 0 0 12px 0; }}
-table.data {{ width: 100%; border-collapse: collapse; font-size: 9pt; }}
+table.data {{ width: 100%; border-collapse: collapse; font-size: 10pt; }}
 th, td {{ border: 0.5px solid #CCCCCC; text-align: center; padding: 3px 4px; }}
 th {{ background-color: #F3F4F6; }}
 </style></head><body>
 <h1>水分仪分析报表</h1>
 <pre style="font-size:10pt; font-family:'SimSun','Microsoft YaHei',serif; margin:0;">测试单位：{unit}                    打印日期：{date_str}</pre>
 <table class="data">
-<thead><tr><th>样品名称</th><th>模式</th><th>坩埚重(g)</th><th>样品重量(g)</th><th>检查性干燥重量(g)</th><th>干燥重量(g)</th><th>水分(%)</th><th>平均值(%)</th><th>精密度(%)</th></tr></thead>
+<thead><tr><th>样品名称</th><th>模式</th><th>坩埚重(g)</th><th>样品重量(g)</th><th>检查性干燥重量(g)</th><th>干燥重量(g)</th><th>水分(%)</th><th>平均值(%)</th></tr></thead>
 <tbody>{rows_html}</tbody>
 </table>
 <pre style="font-size:10pt; font-family:'SimSun','Microsoft YaHei',serif; margin:8px 0 0 0;">化验员：{tech}                    审核：{reviewer}</pre>
@@ -73,7 +73,7 @@ def print_report(parent, table_widget, unit="", tech="", reviewer=""):
 
     printer = QPrinter(QPrinter.HighResolution)
     printer.setPageSize(QPrinter.A4)
-    printer.setPageMargins(15, 15, 15, 15, QPrinter.Millimeter)
+    printer.setPageMargins(8, 8, 8, 8, QPrinter.Millimeter)
 
     from PySide2.QtPrintSupport import QPrinterInfo
     if not QPrinterInfo.availablePrinterNames():
@@ -96,7 +96,7 @@ def print_report(parent, table_widget, unit="", tech="", reviewer=""):
 
 
 def print_report_direct(parent, table_widget, unit="", tech="", reviewer=""):
-    """直接调系统打印对话框"""
+    """直接调系统打印对话框, 无打印机时导出PDF"""
     data = _collect_table_data(table_widget)
     if not data:
         return
@@ -108,76 +108,89 @@ def print_report_direct(parent, table_widget, unit="", tech="", reviewer=""):
 
     printer = QPrinter(QPrinter.HighResolution)
     printer.setPageSize(QPrinter.A4)
-    printer.setPageMargins(15, 15, 15, 15, QPrinter.Millimeter)
+    printer.setPageMargins(8, 8, 8, 8, QPrinter.Millimeter)
+
+    from PySide2.QtPrintSupport import QPrinterInfo
+    if not QPrinterInfo.availablePrinterNames():
+        # 无打印机 -> 导出PDF
+        path, _ = QFileDialog.getSaveFileName(
+            parent, "导出 PDF", "水分仪分析报表", "PDF 文件 (*.pdf)")
+        if not path:
+            return
+        printer.setOutputFormat(QPrinter.PdfFormat)
+        printer.setOutputFileName(path)
+        doc.print_(printer)
+        return
 
     dlg = QPrintDialog(printer, parent)
     if dlg.exec_() == QPrintDialog.Accepted:
         doc.print_(printer)
 
 
-def print_export_prompt(parent, table_widget, unit="", tech="", reviewer=""):
-    """弹出打印/导出选择对话框"""
-    from PySide2.QtWidgets import QDialog, QVBoxLayout, QPushButton, QFileDialog
-    from PySide2.QtPrintSupport import QPrinter, QPrintDialog
-    from PySide2.QtGui import QFont, QTextDocument
-    from datetime import datetime
-
-    data = _collect_table_data(table_widget)
-    if not data:
-        return
-
-    doc = QTextDocument()
-    doc.setDefaultFont(QFont("SimSun", 10))
-    html = _build_html(unit, data, tech, reviewer, datetime.now().strftime("%Y/%#m/%#d"))
-    doc.setHtml(html)
-
-    dlg = QDialog(parent)
-    dlg.setWindowTitle("打印 / 导出")
-    dlg.setFixedSize(300, 200)
-    dlg.setStyleSheet("""
-        QDialog { background-color: #F2F4F7; }
-    """)
-
-    layout = QVBoxLayout(dlg)
-    layout.setSpacing(8)
-    layout.setContentsMargins(24, 16, 24, 16)
-
-    btn_print = QPushButton("打  印")
-    btn_print.setObjectName("btnPrint")
-    btn_export = QPushButton("导出 PDF")
-    btn_export.setObjectName("btnExport")
-
-    layout.addWidget(btn_print)
-    layout.addWidget(btn_export)
-
-    btn_print.clicked.connect(lambda: _do_print(doc, parent, dlg))
-    btn_export.clicked.connect(lambda: _do_export_pdf(doc, parent, dlg))
-
-    dlg.exec_()
-
-
-def _do_print(doc, parent, dlg):
-    dlg.accept()
-    from PySide2.QtPrintSupport import QPrinter, QPrintDialog
-    printer = QPrinter(QPrinter.HighResolution)
-    printer.setPageSize(QPrinter.A4)
-    printer.setPageMargins(15, 15, 15, 15, QPrinter.Millimeter)
-    dlg_print = QPrintDialog(printer, parent)
-    if dlg_print.exec_() == QPrintDialog.Accepted:
-        doc.print_(printer)
-
-
-def _do_export_pdf(doc, parent, dlg):
-    dlg.accept()
-    from PySide2.QtWidgets import QFileDialog
-    from PySide2.QtPrintSupport import QPrinter
-    path, _ = QFileDialog.getSaveFileName(
-        parent, "导出 PDF", "水分仪分析报表", "PDF 文件 (*.pdf)")
-    if not path:
-        return
-    printer = QPrinter(QPrinter.HighResolution)
-    printer.setPageSize(QPrinter.A4)
-    printer.setPageMargins(15, 15, 15, 15, QPrinter.Millimeter)
-    printer.setOutputFormat(QPrinter.PdfFormat)
-    printer.setOutputFileName(path)
-    doc.print_(printer)
+# [已屏蔽] 打印/导出选择弹窗 — 现在直接调系统打印对话框
+# def print_export_prompt(parent, table_widget, unit="", tech="", reviewer=""):
+#     """弹出打印/导出选择对话框"""
+#     from PySide2.QtWidgets import QDialog, QVBoxLayout, QPushButton, QFileDialog
+#     from PySide2.QtPrintSupport import QPrinter, QPrintDialog
+#     from PySide2.QtGui import QFont, QTextDocument
+#     from datetime import datetime
+#
+#     data = _collect_table_data(table_widget)
+#     if not data:
+#         return
+#
+#     doc = QTextDocument()
+#     doc.setDefaultFont(QFont("SimSun", 10))
+#     html = _build_html(unit, data, tech, reviewer, datetime.now().strftime("%Y/%#m/%#d"))
+#     doc.setHtml(html)
+#
+#     dlg = QDialog(parent)
+#     dlg.setWindowTitle("打印 / 导出")
+#     dlg.setFixedSize(300, 200)
+#     dlg.setStyleSheet("""
+#         QDialog { background-color: #F2F4F7; }
+#     """)
+#
+#     layout = QVBoxLayout(dlg)
+#     layout.setSpacing(8)
+#     layout.setContentsMargins(24, 16, 24, 16)
+#
+#     btn_print = QPushButton("打  印")
+#     btn_print.setObjectName("btnPrint")
+#     btn_export = QPushButton("导出 PDF")
+#     btn_export.setObjectName("btnExport")
+#
+#     layout.addWidget(btn_print)
+#     layout.addWidget(btn_export)
+#
+#     btn_print.clicked.connect(lambda: _do_print(doc, parent, dlg))
+#     btn_export.clicked.connect(lambda: _do_export_pdf(doc, parent, dlg))
+#
+#     dlg.exec_()
+#
+#
+# def _do_print(doc, parent, dlg):
+#     dlg.accept()
+#     from PySide2.QtPrintSupport import QPrinter, QPrintDialog
+#     printer = QPrinter(QPrinter.HighResolution)
+#     printer.setPageSize(QPrinter.A4)
+#     printer.setPageMargins(15, 15, 15, 15, QPrinter.Millimeter)
+#     dlg_print = QPrintDialog(printer, parent)
+#     if dlg_print.exec_() == QPrintDialog.Accepted:
+#         doc.print_(printer)
+#
+#
+# def _do_export_pdf(doc, parent, dlg):
+#     dlg.accept()
+#     from PySide2.QtWidgets import QFileDialog
+#     from PySide2.QtPrintSupport import QPrinter
+#     path, _ = QFileDialog.getSaveFileName(
+#         parent, "导出 PDF", "水分仪分析报表", "PDF 文件 (*.pdf)")
+#     if not path:
+#         return
+#     printer = QPrinter(QPrinter.HighResolution)
+#     printer.setPageSize(QPrinter.A4)
+#     printer.setPageMargins(15, 15, 15, 15, QPrinter.Millimeter)
+#     printer.setOutputFormat(QPrinter.PdfFormat)
+#     printer.setOutputFileName(path)
+#     doc.print_(printer)

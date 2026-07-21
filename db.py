@@ -43,6 +43,7 @@ def _init_db(conn):
             tw_interval INTEGER DEFAULT 5,
             tw_low REAL DEFAULT 9.0000, tw_high REAL DEFAULT 12.0000,
             tw_fan INTEGER DEFAULT 1, tw_corr REAL DEFAULT 0.00,
+            aw_temp_corr REAL DEFAULT 0.0, tw_temp_corr REAL DEFAULT 0.0,
             beep INTEGER DEFAULT 1, retest INTEGER DEFAULT 0,
             autoclear INTEGER DEFAULT 0, sample_count INTEGER DEFAULT 24, hy_current TEXT DEFAULT "",
             boot_password TEXT DEFAULT "1234", user_password TEXT DEFAULT "1234", admin_password TEXT DEFAULT "1234"
@@ -188,6 +189,15 @@ def _init_db(conn):
         cur.execute("ALTER TABLE experiment_samples ADD COLUMN orig_dry_weight REAL")
     except sqlite3.OperationalError:
         pass
+    # v3: 温度校准
+    try:
+        cur.execute("ALTER TABLE params ADD COLUMN aw_temp_corr REAL DEFAULT 0.0")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        cur.execute("ALTER TABLE params ADD COLUMN tw_temp_corr REAL DEFAULT 0.0")
+    except sqlite3.OperationalError:
+        pass
 
 
 # ========== 工厂默认值 ==========
@@ -199,6 +209,7 @@ FACTORY_DEFAULTS = {
         "weigh_mode": 0,
         "aw_low": 0.9000, "aw_high": 1.1000, "tw_low": 9.0000, "tw_high": 12.0000,
         "aw_corr": 0.00, "tw_corr": 0.00,
+        "aw_temp_corr": 0.0, "tw_temp_corr": 0.0,
         "aw_fan": 1,
         "tw_fan": 1,
         "retest": 0, "autoclear": 1,
@@ -209,6 +220,7 @@ FACTORY_DEFAULTS = {
         "weigh_mode": 0,
         "aw_low": 0.9000, "aw_high": 1.1000, "tw_low": 9.0000, "tw_high": 12.0000,
         "aw_corr": 0.00, "tw_corr": 0.00,
+        "aw_temp_corr": 0.0, "tw_temp_corr": 0.0,
         "aw_fan": 1,
         "tw_fan": 1,
         "retest": 0, "autoclear": 1,
@@ -219,6 +231,7 @@ FACTORY_DEFAULTS = {
         "weigh_mode": 0,
         "aw_low": 0.9000, "aw_high": 1.1000, "tw_low": 9.0000, "tw_high": 12.0000,
         "aw_corr": 0.00, "tw_corr": 0.00,
+        "aw_temp_corr": 0.0, "tw_temp_corr": 0.0,
         "aw_fan": 1,
         "tw_fan": 1,
         "retest": 0, "autoclear": 1,

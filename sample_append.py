@@ -135,21 +135,31 @@ class SampleAppendWorker(QObject):
         self._step3_tare_stable()
 
     def _step3_tare_stable(self):
-        """样盘下降后稳定5s, 持续主动读取天平数据（对齐 weigh_controller._wait_descend_and_read）"""
+        """样盘下降后稳定5s, 持续主动读取天平数据, 取最后3个中位数"""
         self.sig_status_update.emit("步骤3: 等待坩埚重量稳定5s...")
         _log("[步骤3] 下降到位, 等待5秒稳定, 持续读取天平数据")
         start = time.time()
-        weight = self._current_weight
+        recent_weights = []
+        if self._current_weight:
+            recent_weights.append(self._current_weight)
         while time.time() - start < STABLE_WAIT_S:
             if not self._running:
                 return
             w = self._read_serial_weight()
             if w is not None:
-                weight = w
+                recent_weights.append(w)
                 self._current_weight = w
                 self.sig_weight_update.emit(w)
                 _log("[步骤3] 稳定读数: %.4fg" % w)
             time.sleep(0.5)
+        # 取最后3个读数的中位数, 不足3个则取最后一个
+        if len(recent_weights) >= 3:
+            last_three = sorted(recent_weights[-3:])
+            weight = last_three[1]
+        elif recent_weights:
+            weight = recent_weights[-1]
+        else:
+            weight = 0.0
         self._current_weight = weight
         self._step4_tare_read()
 
